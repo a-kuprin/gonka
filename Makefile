@@ -1,8 +1,11 @@
 .PHONY: release decentralized-api-release inference-chain-release tmkms-release proxy-release proxy-ssl-release bridge-release versiond-release check-docker build-testermint run-blockchain-tests test-blockchain local-build api-local-build node-local-build api-test node-test mock-server-build-docker proxy-build-docker proxy-ssl-build-docker bridge-build-docker run-bls-tests devshardctl-build devshardd-build print-devshard-version versiond-build-docker testapp-server-build-docker
 
 include scripts/blst-portable.mk
+include scripts/registry-cache.mk
 
 VERSION ?= $(shell git describe --always)
+export REGISTRY_CACHE_OWNER
+export USE_REGISTRY_CACHE
 # devshardd link stamp; Testermint VERSIOND_FORCE follows this via build/devshard-version or `make print-devshard-version`.
 DEVSHARD_VERSION ?= dev
 
@@ -11,9 +14,9 @@ print-devshard-version:
 TAG_NAME := "release/v$(VERSION)"
 USE_REGISTRY_CACHE ?= 0
 ifeq ($(USE_REGISTRY_CACHE),1)
-_MOCK_CACHE_ARGS := --cache-from type=registry,ref=ghcr.io/gonka-ai/mock-server:buildcache --cache-to type=registry,ref=ghcr.io/gonka-ai/mock-server:buildcache,mode=min
+_MOCK_CACHE_ARGS := $(call registry_cache_flags,mock-server)
 _MOCK_BUILD_CMD := docker buildx build --load $(_MOCK_CACHE_ARGS)
-_DEVSHARDD_CACHE_ARGS := --cache-from type=registry,ref=ghcr.io/gonka-ai/devshardd:buildcache --cache-to type=registry,ref=ghcr.io/gonka-ai/devshardd:buildcache,mode=min
+_DEVSHARDD_CACHE_ARGS := $(call registry_cache_flags,devshardd)
 _DEVSHARDD_BUILD_CMD := docker buildx build --load $(_DEVSHARDD_CACHE_ARGS)
 else
 _MOCK_CACHE_ARGS :=

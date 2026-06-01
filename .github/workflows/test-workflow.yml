@@ -165,6 +165,8 @@ jobs:
           GENESIS_OVERRIDES_FILE: "inference-chain/test_genesis_overrides.json"
           DEVSHARD_VERSION: "v0.2.11"
           USE_REGISTRY_CACHE: "1"
+          # Fork workflows must push cache to the repo owner's GHCR (e.g. ghcr.io/a-kuprin/api:buildcache).
+          REGISTRY_CACHE_OWNER: ${{ github.repository_owner }}
         run: |
           make build-docker
           make devshardd-build

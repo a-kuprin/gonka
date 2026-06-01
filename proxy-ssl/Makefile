@@ -4,9 +4,11 @@ VERSION ?= $(shell git describe --always)
 SET_LATEST ?= 0
 SET_LATEST := $(shell if [ "$(SET_LATEST)" = "1" ]; then echo 1; else echo 0; fi)
 PLATFORMS ?= linux/amd64,linux/arm64
+include ../scripts/registry-cache.mk
+
 USE_REGISTRY_CACHE ?= 0
 ifeq ($(USE_REGISTRY_CACHE),1)
-DOCKER_CACHE_ARGS := --cache-from type=registry,ref=ghcr.io/gonka-ai/proxy-ssl:buildcache --cache-to type=registry,ref=ghcr.io/gonka-ai/proxy-ssl:buildcache,mode=min
+DOCKER_CACHE_ARGS := $(call registry_cache_flags,proxy-ssl)
 DOCKER_BUILD_PREFIX := docker buildx build --load $(DOCKER_CACHE_ARGS)
 else
 DOCKER_CACHE_ARGS :=

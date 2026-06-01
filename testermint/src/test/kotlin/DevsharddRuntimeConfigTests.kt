@@ -21,7 +21,6 @@ import com.productscience.nodemanager.NodeManagerProto
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.MethodOrderer
 import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Tag
@@ -38,7 +37,7 @@ import kotlin.system.measureTimeMillis
  *
  * One cluster per class ([BeforeAll] only). Complements [RuntimeConfigTests], which exercises
  * the same gRPC from the test process without versiond/devshardd. Covers host-visible effects:
- * epoch propagation, dapi restart recovery; governance HTTP case accepted via `@Disabled` (see implementation doc).
+ * epoch propagation, dapi restart recovery, and governance-driven disable/re-enable of devshard completions via the proxy.
  *
  * Requires `build/devshardd` (build with same DEVSHARD_VERSION as tests, see [devshardTestVersion]).
  *
@@ -226,11 +225,6 @@ class DevsharddRuntimeConfigTests : TestermintTest() {
     @Test
     @Order(1)
     @Tag("integration")
-    @Disabled(
-        "Accepted Step 7 e2e (2026-05-22): governance + runtimeconfig disable/re-enable verified in " +
-            "versiond logs; curl via devshardctl proxy does not observe HTTP 503 (proxy timeout/502). " +
-            "See devshard/docs/params-refactoring-implementation.md — Step 7 e2e acceptance notes.",
-    )
     fun `governance flip disables then re-enables devshardd completions within 30s`() {
         genesis.waitForNextInferenceWindow()
 

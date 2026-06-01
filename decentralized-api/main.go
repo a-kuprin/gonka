@@ -29,9 +29,11 @@ import (
 	internaldevshard "decentralized-api/internal/devshard"
 	"decentralized-api/internal/validation"
 	"decentralized-api/logging"
+	"decentralized-api/observability"
 	"decentralized-api/participant"
+	devshardlogging "devshard/logging"
+	devshardobservability "devshard/observability"
 	devshardstorage "devshard/storage"
-	devshardtypes "devshard/types"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,6 +74,9 @@ func main() {
 	if configManager.GetApiConfig().TestMode {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
+	devshardlogging.SetLogger(devshardlogging.NewSlogAdapter("subsystem", devshardobservability.ServiceName))
+	devshardobservability.SetRuntime("api", configManager.GetCurrentNodeVersion(), "dapi_inprocess")
+	devshardobservability.SetBuildInfo("api", configManager.GetCurrentNodeVersion(), "")
 
 	natssrv := server.NewServer(configManager.GetNatsConfig())
 	if err := natssrv.Start(); err != nil {
@@ -152,6 +157,23 @@ func main() {
 	// Create a cancellable context for the entire system
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // Ensure resources are cleaned up
+
+	// Initialize OpenTelemetry. Returns a noop shutdown when disabled, so it
+	// is safe to defer unconditionally. Trace context propagation is wired in
+	// either case so downstream services see the trace ids.
+	shutdownObservability, err := observability.Init(ctx, observability.Config{
+		ServiceName:        observability.ServiceName,
+		ParticipantAddress: participantInfo.GetAddress(),
+	})
+	if err != nil {
+		logging.Error("Failed to initialize observability", types.System, "error", err)
+		return
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = shutdownObservability(shutdownCtx)
+	}()
 
 	// Start periodic config auto-flush of dynamic data to DB
 	configManager.StartAutoFlush(ctx, 60*time.Second)
@@ -239,10 +261,7 @@ func main() {
 	)
 
 	if devshardSigner != nil {
-		devshardBridge := internaldevshard.NewChainBridgeWithDefaults(
-			recorder,
-			internaldevshard.NewConfigManagerDefaults(configManager),
-		)
+		devshardBridge := internaldevshard.NewChainBridge(recorder)
 		httpClient := pserver.NewNoRedirectClient(internaldevshard.MLNodeHTTPTimeout)
 		chainParams := &configParamsProvider{cm: configManager}
 		devshardEngine := internaldevshard.NewEngineAdapter(nodeBroker, configManager.GetCurrentNodeVersion(), payloadStore, chainPhaseTracker, httpClient, chainParams)
@@ -265,8 +284,10 @@ func main() {
 				devshardStore.PruneOnceAsync(ctx)
 			})
 
-			hostManager := internaldevshard.NewHostManager(devshardStore, devshardSigner, devshardEngine, devshardValidator, devshardtypes.DefaultStateRootVersion, devshardBridge, payloadStore, recorder)
+			hostManager := internaldevshard.NewHostManager(devshardStore, devshardSigner, devshardEngine, devshardValidator, "v1", devshardBridge, payloadStore, recorder)
 			hostManager.SetAvailabilityProvider(internaldevshard.NewConfigManagerAvailability(configManager, chainPhaseTracker))
+			hostManager.SetMaxNonceProvider(internaldevshard.ConfigManagerMaxNonce(configManager))
+			hostManager.SetRuntimeParamsProvider(internaldevshard.ConfigManagerRuntimeParams(configManager))
 			hostManager.Register(publicServer.DevshardGroup())
 			go func() {
 				migrated, mErr := devshardstorage.MigrateLegacySQLite(devshardLegacyDB, devshardInner, func(escrowID string) (uint64, error) {

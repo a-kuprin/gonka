@@ -16,6 +16,7 @@ import (
 	"devshard"
 	"devshard/gossip"
 	"devshard/logging"
+	"devshard/observability"
 	"devshard/signing"
 	"devshard/state"
 	"devshard/storage"
@@ -61,6 +62,17 @@ type HostResponse struct {
 	Mempool            []*types.DevshardTx
 	ExecutionJob       *devshard.ExecuteRequest // non-nil if this host is the executor and execution is deferred
 	CachedResponseBody []byte                   // non-nil when reconnecting to a completed inference
+	InferenceID        uint64
+	ReceiptExpected    bool
+	ReceiptReason      observability.Reason
+	ExecutionExpected  bool
+}
+
+type receiptOutcome struct {
+	inferenceID       uint64
+	receiptExpected   bool
+	reason            observability.Reason
+	executionExpected bool
 }
 
 // AcceptanceChecker is an optional hook that lets the host withhold its
@@ -118,6 +130,7 @@ type Host struct {
 	terminalAtTime        map[uint64]time.Time // inference ID -> wall clock at terminal (v2)
 	sealGraceNonces       uint64               // nonce gate from SessionConfig.SealGraceNonces
 	inferenceClearGrace   time.Duration        // wall-clock gate from SessionConfig
+	maxNonce              devshard.MaxNonceProvider // nil = do not enforce
 }
 
 // SnapshotInterval controls how often hosts persist full state snapshots.
@@ -262,6 +275,12 @@ func WithAvailabilityProvider(p devshard.AvailabilityProvider) HostOption {
 	return func(h *Host) { h.availability = p }
 }
 
+// WithMaxNonceProvider enforces chain max_nonce on the host, reserving
+// FinalizeNonceReserve(groupSize) nonces so settlement can succeed on-chain.
+func WithMaxNonceProvider(p devshard.MaxNonceProvider) HostOption {
+	return func(h *Host) { h.maxNonce = p }
+}
+
 // WithGrace adds a StalenessChecker to the host's acceptance chain.
 // If a checker was already set via the constructor, both are composed
 // via CompositeChecker.
@@ -372,16 +391,20 @@ func (h *Host) HandleRequest(ctx context.Context, req HostRequest) (*HostRespons
 	var lastAppliedTxs []*types.DevshardTx
 	diffsApplied := false
 	for _, diff := range req.Diffs {
-		if err := h.applyAndPersist(diff); err != nil {
+		if err := h.checkDiffNonceLimitLocked(diff); err != nil {
 			h.mu.Unlock()
 			return nil, err
+		}
+		if err := h.applyAndPersist(diff); err != nil {
+			h.mu.Unlock()
+			return nil, observability.Classify(observability.ReasonApplyErr, observability.WhereHostApplyDiff, err)
 		}
 		lastAppliedTxs = diff.Txs
 		diffsApplied = true
 	}
 
 	// (b) Sign executor receipt (sync, under mutex).
-	receipt, confirmedAt, job, cachedBody, err := h.signReceipt(req)
+	receipt, confirmedAt, job, cachedBody, receiptOutcome, err := h.signReceipt(req)
 	if err != nil {
 		h.mu.Unlock()
 		return nil, err
@@ -391,7 +414,12 @@ func (h *Host) HandleRequest(ctx context.Context, req HostRequest) (*HostRespons
 	stateSig, root, nonce, err := h.signIfAccepted(lastAppliedTxs)
 	if err != nil {
 		h.mu.Unlock()
-		return nil, err
+		return nil, observability.Classify(observability.ReasonStateSignErr, observability.WhereHostSignState, err)
+	}
+	if stateSig == nil {
+		observability.Log(ctx, observability.LevelInfo, "state signature withheld", observability.StageReceipt, observability.WhereHostSignState, h.escrowID, observability.ReasonStateSignatureWithheld, nil,
+			"inference_id", receiptOutcome.inferenceID,
+			"nonce", nonce)
 	}
 
 	// (d) Collect validation candidates under mutex.
@@ -431,6 +459,10 @@ func (h *Host) HandleRequest(ctx context.Context, req HostRequest) (*HostRespons
 		Mempool:            h.mempool.Txs(),
 		ExecutionJob:       job,
 		CachedResponseBody: cachedBody,
+		InferenceID:        receiptOutcome.inferenceID,
+		ReceiptExpected:    receiptOutcome.receiptExpected,
+		ReceiptReason:      receiptOutcome.reason,
+		ExecutionExpected:  receiptOutcome.executionExpected,
 	}, nil
 }
 
@@ -466,6 +498,43 @@ func (h *Host) currentAvailability() devshard.AvailabilityStatus {
 	return h.availability.CurrentAvailability()
 }
 
+// checkDiffNonceLimitLocked enforces chain max_nonce before applying a new diff.
+// Caller must hold h.mu.
+func (h *Host) checkDiffNonceLimitLocked(diff types.Diff) error {
+	currentNonce := h.sm.LatestNonce()
+	if diff.Nonce <= currentNonce {
+		return nil
+	}
+	maxNonce := h.chainMaxNonce()
+	if maxNonce == 0 {
+		return nil
+	}
+	max := uint64(maxNonce)
+	if diff.Nonce > max {
+		return fmt.Errorf("%w: nonce %d exceeds chain maximum %d", types.ErrNonceLimitExceeded, diff.Nonce, maxNonce)
+	}
+	if h.sm.Phase() != types.PhaseActive {
+		return nil
+	}
+	if !types.DiffHasActiveCompletionWork(diff) {
+		return nil
+	}
+	activeCap := types.MaxActiveNonce(maxNonce, len(h.group))
+	if diff.Nonce > activeCap {
+		reserve := types.FinalizeNonceReserve(len(h.group))
+		return fmt.Errorf("%w: nonce %d exceeds active cap %d (reserved %d for finalization/settlement)",
+			types.ErrNonceLimitExceeded, diff.Nonce, activeCap, reserve)
+	}
+	return nil
+}
+
+func (h *Host) chainMaxNonce() uint32 {
+	if h.maxNonce == nil {
+		return 0
+	}
+	return h.maxNonce.MaxNonce()
+}
+
 // applyAndPersist applies a diff, removes included txs from mempool, and persists.
 // Captures WarmKeyDelta (new warm key bindings introduced by this diff) for replay.
 // Caller must hold h.mu.
@@ -473,6 +542,9 @@ func (h *Host) applyAndPersist(diff types.Diff) error {
 	currentNonce := h.sm.LatestNonce()
 	if diff.Nonce <= currentNonce {
 		return nil
+	}
+	if err := h.checkDiffNonceLimitLocked(diff); err != nil {
+		return err
 	}
 	phaseBefore := h.sm.Phase()
 	var warmBefore map[uint32]string
@@ -506,7 +578,7 @@ func (h *Host) applyAndPersist(diff types.Diff) error {
 		delta := types.ComputeWarmKeyDelta(warmBefore, warmAfter)
 		rec := types.DiffRecord{Diff: diff, StateHash: root, WarmKeyDelta: delta}
 		if err := h.store.AppendDiff(h.escrowID, rec); err != nil {
-			return fmt.Errorf("persist diff nonce %d: %w", diff.Nonce, err)
+			return observability.Classify(observability.ReasonPersistDiffErr, observability.WhereHostApplyDiff, fmt.Errorf("persist diff nonce %d: %w", diff.Nonce, err))
 		}
 		phaseAfter := h.sm.Phase()
 		settledNow := phaseBefore != types.PhaseSettlement && phaseAfter == types.PhaseSettlement
@@ -779,13 +851,16 @@ func (h *Host) findDiff(diffs []types.Diff, nonce uint64) *types.Diff {
 // Returns the receipt sig, confirmed_at timestamp, an ExecuteRequest if this host is the executor,
 // and cached response body if the inference already completed (reconnect case).
 // Caller must hold h.mu.
-func (h *Host) signReceipt(req HostRequest) ([]byte, int64, *devshard.ExecuteRequest, []byte, error) {
+func (h *Host) signReceipt(req HostRequest) ([]byte, int64, *devshard.ExecuteRequest, []byte, receiptOutcome, error) {
+	outcome := receiptOutcome{reason: observability.ReasonNotExecutor}
 	if req.Payload == nil {
-		return nil, 0, nil, nil, nil
+		outcome.reason = observability.ReasonPayloadAbsent
+		return nil, 0, nil, nil, outcome, nil
 	}
 	targetDiff := h.findDiff(req.Diffs, req.Nonce)
 	if targetDiff == nil {
-		return nil, 0, nil, nil, nil
+		outcome.reason = observability.ReasonTargetDiffAbsent
+		return nil, 0, nil, nil, outcome, nil
 	}
 
 	for _, tx := range targetDiff.Txs {
@@ -793,14 +868,16 @@ func (h *Host) signReceipt(req HostRequest) ([]byte, int64, *devshard.ExecuteReq
 		if start == nil {
 			continue
 		}
+		outcome.inferenceID = start.InferenceId
 		executorSlot := h.group[start.InferenceId%uint64(len(h.group))].SlotID
 		if !h.slotIDs[executorSlot] {
 			continue
 		}
+		outcome.receiptExpected = true
 
 		// Verify payload matches signed diff.
 		if err := VerifyPayload(req.Payload, start.PromptHash, start.Model, start.InputLength, start.MaxTokens, start.StartedAt); err != nil {
-			return nil, 0, nil, nil, err
+			return nil, 0, nil, nil, outcome, observability.Classify(observability.ReasonPayloadVerifyErr, observability.WhereHostSignReceipt, err)
 		}
 
 		// Sign executor receipt with wall-clock confirmed_at.
@@ -817,11 +894,11 @@ func (h *Host) signReceipt(req HostRequest) ([]byte, int64, *devshard.ExecuteReq
 		}
 		receiptData, err := proto.Marshal(receiptContent)
 		if err != nil {
-			return nil, 0, nil, nil, fmt.Errorf("marshal executor receipt: %w", err)
+			return nil, 0, nil, nil, outcome, observability.Classify(observability.ReasonReceiptMarshalErr, observability.WhereHostSignReceipt, fmt.Errorf("marshal executor receipt: %w", err))
 		}
 		sig, err := h.signer.Sign(receiptData)
 		if err != nil {
-			return nil, 0, nil, nil, fmt.Errorf("sign executor receipt: %w", err)
+			return nil, 0, nil, nil, outcome, observability.Classify(observability.ReasonReceiptSignErr, observability.WhereHostSignReceipt, fmt.Errorf("sign executor receipt: %w", err))
 		}
 
 		// Add MsgConfirmStart to mempool so it survives HTTP failures.
@@ -837,15 +914,19 @@ func (h *Host) signReceipt(req HostRequest) ([]byte, int64, *devshard.ExecuteReq
 
 		// Dedup: return receipt (proves executor alive) but skip execution.
 		if _, dup := h.executing[start.InferenceId]; dup {
-			return sig, confirmedAt, nil, nil, nil
+			outcome.reason = observability.ReasonAlreadyExecuting
+			return sig, confirmedAt, nil, nil, outcome, nil
 		}
 
 		// Already completed: execution finished, response cached.
 		if cached, ok := h.completedResponses[start.InferenceId]; ok {
-			return sig, confirmedAt, nil, cached, nil
+			outcome.reason = observability.ReasonCachedResponse
+			return sig, confirmedAt, nil, cached, outcome, nil
 		}
 
 		h.executing[start.InferenceId] = struct{}{}
+		outcome.executionExpected = true
+		outcome.reason = observability.ReasonOK
 
 		job := &devshard.ExecuteRequest{
 			InferenceID: start.InferenceId,
@@ -857,15 +938,21 @@ func (h *Host) signReceipt(req HostRequest) ([]byte, int64, *devshard.ExecuteReq
 			EscrowID:    h.escrowID,
 			EpochID:     h.epochID,
 		}
-		return sig, confirmedAt, job, nil, nil
+		return sig, confirmedAt, job, nil, outcome, nil
 	}
-	return nil, 0, nil, nil, nil
+	return nil, 0, nil, nil, outcome, nil
 }
 
 // executeAsync runs inference and adds MsgFinishInference to the mempool.
 // Delegates to RunExecution which also caches the response body for reconnection.
 func (h *Host) executeAsync(ctx context.Context, job *devshard.ExecuteRequest) {
 	_, _ = h.RunExecution(ctx, job)
+}
+
+func (h *Host) ReleaseExecution(inferenceID uint64) {
+	h.mu.Lock()
+	delete(h.executing, inferenceID)
+	h.mu.Unlock()
 }
 
 // RunExecution executes an inference job and adds MsgFinishInference to the mempool.
@@ -877,23 +964,13 @@ func (h *Host) RunExecution(ctx context.Context, job *devshard.ExecuteRequest) (
 	executorSlot := h.group[inferenceID%uint64(len(h.group))].SlotID
 	diffNonce := h.LatestNonce()
 
-	defer func() {
-		h.mu.Lock()
-		delete(h.executing, inferenceID)
-		h.mu.Unlock()
-	}()
+	defer h.ReleaseExecution(inferenceID)
 
 	result, err := h.engine.Execute(ctx, *job)
 	if err != nil {
-		logging.Error("execute failed", "subsystem", "host", "inference_id", inferenceID, "error", err)
-		return nil, err
-	}
-
-	// Cache response body for reconnection replay.
-	if len(result.ResponseBody) > 0 {
-		h.mu.Lock()
-		h.completedResponses[inferenceID] = result.ResponseBody
-		h.mu.Unlock()
+		reason, where := observability.ErrorReason(err, observability.ReasonExecuteErr, observability.WhereHostExecute)
+		return nil, observability.FailReceiptOrphan(ctx, h.escrowID, reason, where,
+			observability.StageFinished, "execute failed", err, "inference_id", inferenceID)
 	}
 
 	finishMsg := &types.MsgFinishInference{
@@ -906,8 +983,9 @@ func (h *Host) RunExecution(ctx context.Context, job *devshard.ExecuteRequest) (
 	}
 	proposerSig, err := h.signProposer(finishMsg)
 	if err != nil {
-		logging.Error("sign finish msg failed", "subsystem", "host", "inference_id", inferenceID, "error", err)
-		return result, err
+		return result, observability.FailReceiptOrphan(ctx, h.escrowID,
+			observability.ReasonSignFinishErr, observability.WhereHostPublishFinish,
+			observability.StageFinished, "sign finish msg failed", err, "inference_id", inferenceID)
 	}
 	finishMsg.ProposerSig = proposerSig
 
@@ -917,6 +995,22 @@ func (h *Host) RunExecution(ctx context.Context, job *devshard.ExecuteRequest) (
 		}},
 		ProposedAt: diffNonce,
 	})
+	if result.PartialResponse {
+		reason := observability.Reason(result.PartialResponseReason)
+		if reason == "" {
+			reason = observability.ReasonPartialResponseInterrupted
+		}
+		partialWhere := result.PartialResponseWhere
+		observability.Log(ctx, observability.LevelWarn, "finish published from partial response", observability.StageFinished, observability.WhereHostPublishFinish, h.escrowID, reason, nil,
+			"inference_id", inferenceID,
+			"partial_where", partialWhere)
+	}
+	if len(result.ResponseBody) > 0 {
+		h.mu.Lock()
+		h.completedResponses[inferenceID] = result.ResponseBody
+		h.mu.Unlock()
+	}
+	observability.SetMempoolSize(h.escrowID, h.mempool.Len())
 
 	return result, nil
 }
@@ -925,6 +1019,7 @@ func (h *Host) RunExecution(ctx context.Context, job *devshard.ExecuteRequest) (
 type validateJob struct {
 	inferenceID     uint64
 	validatorSlot   uint32
+	flow            validationFlow
 	model           string
 	promptHash      []byte
 	responseHash    []byte
@@ -934,6 +1029,13 @@ type validateJob struct {
 	executorAddress string
 	epochID         uint64
 }
+
+type validationFlow string
+
+const (
+	validationFlowShouldValidate validationFlow = "should_validate"
+	validationFlowChallenged     validationFlow = "challenged"
+)
 
 // collectValidationJobs finds finished inferences that this host should validate.
 // Caller must hold h.mu.
@@ -980,6 +1082,7 @@ func (h *Host) collectValidationJobs() []validateJob {
 		executorAddr := h.slotToAddr[rec.ExecutorSlot]
 
 		// Phase 1 samples by ValidationRate; Phase 2 is mandatory so VoteThreshold is reachable.
+		flow := validationFlowChallenged
 		if rec.Status == types.StatusFinished {
 			mySlotCount := uint32(len(h.slotIDs))
 			executorSlotCount := h.sm.AddressSlotCount(executorAddr)
@@ -987,6 +1090,7 @@ func (h *Host) collectValidationJobs() []validateJob {
 			if !state.ShouldValidate(h.ownSeed, infID, mySlotCount, executorSlotCount, totalSlots, st.Config.ValidationRate) {
 				continue
 			}
+			flow = validationFlowShouldValidate
 		}
 
 		validatorSlot := h.sortedSlots[0]
@@ -995,6 +1099,7 @@ func (h *Host) collectValidationJobs() []validateJob {
 		jobs = append(jobs, validateJob{
 			inferenceID:     infID,
 			validatorSlot:   validatorSlot,
+			flow:            flow,
 			model:           rec.Model,
 			promptHash:      rec.PromptHash,
 			responseHash:    rec.ResponseHash,
@@ -1033,11 +1138,15 @@ func (h *Host) enqueueValidation(job validateJob) {
 
 	select {
 	case h.validationQueue <- job:
+		observability.IncValidation(observability.StageValidationPicked, observability.MetricStatusQueued)
+		observability.SetValidationQueueDepth(h.escrowID, len(h.validationQueue))
 	default:
 		h.mu.Lock()
 		delete(h.validating, job.inferenceID)
 		h.mu.Unlock()
-		logging.Debug("validation queue full; retry later", "subsystem", "host", "inference_id", job.inferenceID)
+		observability.IncValidation(observability.StageValidationPicked, observability.MetricStatusError)
+		observability.IncValidationQueueDrop()
+		observability.Log(context.Background(), observability.LevelWarn, "validation queue full; retry later", observability.StageValidationPicked, observability.WhereHostValidationQueue, h.escrowID, observability.ReasonQueueFull, nil, "inference_id", job.inferenceID)
 	}
 }
 
@@ -1065,10 +1174,20 @@ func (h *Host) hasMempoolValidationOrVote(infID uint64) bool {
 // another host challenged the inference while this validator was running.
 // Called outside the mutex.
 func (h *Host) validateAsync(ctx context.Context, job validateJob) {
+	ctx = logging.WithRequestID(ctx, fmt.Sprintf("validate-%d", job.inferenceID))
+	observability.IncValidation(observability.StageValidationStarted, observability.MetricStatusOK)
+	observability.Log(ctx, observability.LevelInfo, "validation started", observability.StageValidationStarted, observability.WhereHostValidate, h.escrowID, "", nil,
+		"inference_id", job.inferenceID,
+		"executor_address", job.executorAddress,
+		"validator_slot", job.validatorSlot,
+		"validation_flow", string(job.flow))
 	defer func() {
 		h.mu.Lock()
 		delete(h.validating, job.inferenceID)
 		h.mu.Unlock()
+		if h.validationQueue != nil {
+			observability.SetValidationQueueDepth(h.escrowID, len(h.validationQueue))
+		}
 	}()
 
 	result, err := h.validator.Validate(ctx, devshard.ValidateRequest{
@@ -1095,17 +1214,30 @@ func (h *Host) validateAsync(ctx context.Context, job validateJob) {
 			)
 			return
 		}
-		logging.Error("validate failed", "subsystem", "host", "inference_id", job.inferenceID, "error", err)
+		reason, where := observability.ErrorReason(err, observability.ReasonValidateErr, observability.WhereHostValidate)
+		observability.FailValidationFinished(ctx, h.escrowID, reason, where, "validate failed", err,
+			"inference_id", job.inferenceID,
+			"executor_address", job.executorAddress,
+			"validator_slot", job.validatorSlot,
+			"validation_flow", string(job.flow))
 		return
 	}
 
 	rec, ok := h.sm.GetInference(job.inferenceID)
 	if !ok {
-		logging.Error("validate: inference disappeared", "subsystem", "host", "inference_id", job.inferenceID)
+		observability.FailValidationFinished(ctx, h.escrowID,
+			observability.ReasonInferenceDisappeared, observability.WhereHostValidate,
+			"validate: inference disappeared", nil,
+			"inference_id", job.inferenceID,
+			"executor_address", job.executorAddress,
+			"validator_slot", job.validatorSlot,
+			"validation_flow", string(job.flow))
 		return
 	}
+	observability.IncValidation(observability.StageValidationFinished, observability.MetricStatusOK)
 
 	var tx *types.DevshardTx
+	var validationTx string
 	switch rec.Status {
 	case types.StatusFinished:
 		// TODO: if this MsgValidation lands after another host has already
@@ -1119,11 +1251,21 @@ func (h *Host) validateAsync(ctx context.Context, job validateJob) {
 		}
 		proposerSig, err := h.signProposer(msg)
 		if err != nil {
-			logging.Error("sign validation msg failed", "subsystem", "host", "inference_id", job.inferenceID, "error", err)
+			observability.LogValidationOrphan(ctx, h.escrowID,
+				observability.ReasonSignValidationErr, observability.WhereHostPublishValidation,
+				observability.StageVotePublished, "sign validation msg failed", err,
+				"inference_id", job.inferenceID,
+				"executor_address", job.executorAddress,
+				"validator_slot", job.validatorSlot,
+				"validation_flow", string(job.flow),
+				"validation_result", validationResultLabel(result.Valid),
+				"validation_reason", result.Reason,
+				"result_valid", result.Valid)
 			return
 		}
 		msg.ProposerSig = proposerSig
 		tx = &types.DevshardTx{Tx: &types.DevshardTx_Validation{Validation: msg}}
+		validationTx = "validation"
 	case types.StatusChallenged:
 		msg := &types.MsgValidationVote{
 			InferenceId: job.inferenceID,
@@ -1133,12 +1275,31 @@ func (h *Host) validateAsync(ctx context.Context, job validateJob) {
 		}
 		proposerSig, err := h.signProposer(msg)
 		if err != nil {
-			logging.Error("sign validation vote failed", "subsystem", "host", "inference_id", job.inferenceID, "error", err)
+			observability.LogValidationOrphan(ctx, h.escrowID,
+				observability.ReasonSignVoteErr, observability.WhereHostPublishValidation,
+				observability.StageVotePublished, "sign validation vote failed", err,
+				"inference_id", job.inferenceID,
+				"executor_address", job.executorAddress,
+				"validator_slot", job.validatorSlot,
+				"validation_flow", string(job.flow),
+				"validation_result", validationResultLabel(result.Valid),
+				"validation_reason", result.Reason,
+				"vote_valid", result.Valid)
 			return
 		}
 		msg.ProposerSig = proposerSig
 		tx = &types.DevshardTx{Tx: &types.DevshardTx_ValidationVote{ValidationVote: msg}}
+		validationTx = "validation_vote"
 	default:
+		observability.IncValidation(observability.StageVotePublished, observability.MetricStatusError)
+		observability.Log(ctx, observability.LevelInfo, "validation skipped after status changed", observability.StageVotePublished, observability.WhereHostPublishValidation, h.escrowID, observability.ReasonValidationStatusChanged, nil,
+			"inference_id", job.inferenceID,
+			"executor_address", job.executorAddress,
+			"validator_slot", job.validatorSlot,
+			"validation_flow", string(job.flow),
+			"validation_result", validationResultLabel(result.Valid),
+			"validation_reason", result.Reason,
+			"result_valid", result.Valid)
 		return
 	}
 
@@ -1147,7 +1308,28 @@ func (h *Host) validateAsync(ctx context.Context, job validateJob) {
 		Tx:         tx,
 		ProposedAt: h.sm.LatestNonce(),
 	})
+	observability.SetMempoolSize(h.escrowID, h.mempool.Len())
 	h.mu.Unlock()
+	observability.IncValidation(observability.StageVotePublished, observability.MetricStatusOK)
+	fields := []any{
+		"inference_id", job.inferenceID,
+		"executor_address", job.executorAddress,
+		"validator_slot", job.validatorSlot,
+		"validation_flow", string(job.flow),
+		"validation_tx", validationTx,
+		"validation_result", validationResultLabel(result.Valid),
+		"validation_reason", result.Reason,
+		"result_valid", result.Valid,
+	}
+	fields = append(fields, result.Details...)
+	observability.Log(ctx, observability.LevelInfo, "validation tx published", observability.StageVotePublished, observability.WhereHostPublishValidation, h.escrowID, observability.ReasonOK, nil, fields...)
+}
+
+func validationResultLabel(valid bool) string {
+	if valid {
+		return "valid"
+	}
+	return "invalid"
 }
 
 // AccumulateGossipSig verifies and stores a signature received via gossip.

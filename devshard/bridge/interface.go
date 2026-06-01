@@ -30,6 +30,9 @@ type EscrowInfo struct {
 	// EpochID is the chain epoch_index recorded on the on-chain DevshardEscrow.
 	// Storage uses it as the partition/pruning key.
 	EpochID uint64
+	// Frozen at escrow bind when set by the chain bridge (dapi HostManager).
+	SealGraceNonces            uint32
+	InferenceClearGraceSeconds uint32
 }
 
 type HostInfo struct {

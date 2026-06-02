@@ -124,9 +124,6 @@ fun LocalInferencePair.waitForDevshardPreFinalize(delay: Duration = devshardPreF
     Thread.sleep(delay.toMillis())
 }
 
-private fun devshardChatResponse(content: String): String =
-    """{"id":"test","object":"chat.completion","created":0,"model":"$defaultModel","choices":[{"index":0,"message":{"role":"assistant","content":"$content"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"""
-
 fun IInferenceMock.stubDevshardResponseForAllSegments(
     response: String,
     delay: Duration = Duration.ZERO,
@@ -169,9 +166,10 @@ fun LocalCluster.stubDevshardChatResponse(
     content: String = "hello",
     streamDelay: Duration = Duration.ZERO,
 ) {
+    val response = defaultInferenceResponseObject.withResponse(content)
     allPairs.forEach { pair ->
         pair.mock?.stubDevshardResponseForAllSegments(
-            response = devshardChatResponse(content),
+            response = response,
             streamDelay = streamDelay,
         )
     }

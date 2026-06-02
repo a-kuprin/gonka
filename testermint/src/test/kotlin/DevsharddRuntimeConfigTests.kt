@@ -7,6 +7,8 @@ import com.productscience.devshardVersionedRoutePrefix
 import com.productscience.LocalInferencePair
 import com.productscience.NodeManagerClient
 import com.productscience.versiondOverrideEnv
+import com.productscience.waitForVersiondOverrideReady
+import com.productscience.logVersiondDiagnostics
 import com.productscience.createSpec
 import com.productscience.data.AppState
 import com.productscience.data.EpochPhase
@@ -100,6 +102,7 @@ class DevsharddRuntimeConfigTests : TestermintTest() {
         genesis = g
         cluster.stubDevshardChatResponse()
         nodeManagerClient(genesis).use { waitForSyncedRuntimeConfig(it) }
+        genesis.waitForVersiondOverrideReady(standaloneTestVersionName)
     }
 
     @AfterAll
@@ -356,6 +359,7 @@ class DevsharddRuntimeConfigTests : TestermintTest() {
         try {
             logSection("Restarting dapi API container (devshardd long-poll should backoff and resume)")
             restartApiContainer(genesis)
+            genesis.logVersiondDiagnostics(standaloneTestVersionName)
             genesis.stopDevshardProxy(escrowId)
             val proxyAfterRestart = genesis.startDevshardProxy(
                 escrowId = escrowId,

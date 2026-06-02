@@ -167,13 +167,15 @@ jobs:
       - name: Make Docker Images
         env:
           GENESIS_OVERRIDES_FILE: "inference-chain/test_genesis_overrides.json"
-          DEVSHARD_VERSION: "v0.2.11"
           USE_REGISTRY_CACHE: "1"
           # Fork workflows must push cache to the repo owner's GHCR (e.g. ghcr.io/a-kuprin/api:buildcache).
           REGISTRY_CACHE_OWNER: ${{ github.repository_owner }}
         run: |
           make build-docker
           make devshardd-build
+          echo "=== devshard version (make DEVSHARD_VERSION / build/devshard-version) ==="
+          make -s print-devshard-version
+          cat build/devshard-version
           echo "=== Images immediately after build ==="
           docker images | head -20
 
@@ -201,7 +203,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: devshardd-host-binary
-          path: build/devshardd
+          path: |
+            build/devshardd
+            build/devshard-version
           retention-days: 1
 
       - name: Make Upgrade Build
@@ -267,6 +271,8 @@ jobs:
       - name: Prepare devshardd Host Binary
         run: |
           chmod +x build/devshardd
+          echo "=== devshard version stamp (for Testermint) ==="
+          cat build/devshard-version 2>/dev/null || echo "(missing build/devshard-version)"
 
       - name: Install Make
         run: |
@@ -300,17 +306,21 @@ jobs:
         if: ${{ inputs.use_matrix && inputs.test_command == 'run-tests' }}
         run: |
           echo "Running test group: ${{ matrix.test_group }}"
+          echo "devshard version stamp: $(cat build/devshard-version 2>/dev/null || echo missing)"
           sudo make run-tests TESTS="${{ matrix.test_group }}"
 
       - name: Run Tests (Matrix - Sanity)
         if: ${{ inputs.use_matrix && inputs.test_command == 'run-sanity' }}
         run: |
           echo "Running sanity test group: ${{ matrix.test_group }}"
+          echo "devshard version stamp: $(cat build/devshard-version 2>/dev/null || echo missing)"
           sudo make run-sanity TESTS="${{ matrix.test_group }}"
 
       - name: Run Tests (Non-Matrix)
         if: ${{ !inputs.use_matrix }}
-        run: sudo make ${{ inputs.test_command }}
+        run: |
+          echo "devshard version stamp: $(cat build/devshard-version 2>/dev/null || echo missing)"
+          sudo make ${{ inputs.test_command }}
 
       - name: Dump inference Docker logs on failure
         if: failure()
@@ -320,12 +330,16 @@ jobs:
           mkdir -p "$DUMP_DIR"
           sudo docker ps -a > "$DUMP_DIR/all-containers.txt" 2>&1 || true
           for name in genesis join1 join2; do
-            for svc in node api postgres proxy mock-server; do
+            for svc in node api postgres proxy mock-server versiond devshardd-artifact-server; do
               c="${name}-${svc}"
               if sudo docker inspect "$c" >/dev/null 2>&1; then
                 echo "=== inspect $c ===" >> "$DUMP_DIR/inspect.txt"
                 sudo docker inspect "$c" --format 'state={{.State.Status}} exit={{.State.ExitCode}} err={{.State.Error}}' >> "$DUMP_DIR/inspect.txt" 2>&1 || true
-                sudo docker logs --tail 200 "$c" > "$DUMP_DIR/${c}.log" 2>&1 || true
+                TAIL=200
+                if [ "$svc" = "versiond" ]; then
+                  TAIL=500
+                fi
+                sudo docker logs --tail "$TAIL" "$c" > "$DUMP_DIR/${c}.log" 2>&1 || true
               else
                 echo "missing container: $c" >> "$DUMP_DIR/missing.txt"
               fi
@@ -334,11 +348,14 @@ jobs:
           if [ -d local-test-net ]; then
             (
               cd local-test-net
+              REPO_ROOT="$(cd .. && pwd)"
               echo "=== compose -p genesis ps -a ===" >> "../$DUMP_DIR/compose-ps.txt"
-              sudo docker compose -p genesis -f docker-compose-base.yml -f docker-compose.genesis.yml ps -a >> "../$DUMP_DIR/compose-ps.txt" 2>&1 || true
+              sudo docker compose -p genesis -f docker-compose-base.yml -f docker-compose.genesis.yml --project-directory "$REPO_ROOT" ps -a >> "../$DUMP_DIR/compose-ps.txt" 2>&1 || true
+              echo "=== compose -p genesis (versiond overlay) ps -a ===" >> "../$DUMP_DIR/compose-ps.txt"
+              sudo docker compose -p genesis -f docker-compose-base.yml -f docker-compose.genesis.yml -f docker-compose.versiond.yml --project-directory "$REPO_ROOT" ps -a >> "../$DUMP_DIR/compose-ps.txt" 2>&1 || true
               for p in join1 join2; do
                 echo "=== compose -p $p ps -a ===" >> "../$DUMP_DIR/compose-ps.txt"
-                sudo docker compose -p "$p" -f docker-compose-base.yml -f docker-compose.join.yml ps -a >> "../$DUMP_DIR/compose-ps.txt" 2>&1 || true
+                sudo docker compose -p "$p" -f docker-compose-base.yml -f docker-compose.join.yml --project-directory "$REPO_ROOT" ps -a >> "../$DUMP_DIR/compose-ps.txt" 2>&1 || true
               done
             )
           fi

@@ -198,10 +198,12 @@ data class DockerGroup(
             // often exits before genesis creates the cold key. Boot chain-node first, then
             // the rest. Default genesis tests (no versiond overlay) keep the original path.
             Logger.info("Genesis + versiond overlay: starting chain-node before full stack", "")
+            logVersiondComposeEnvironmentIfNeeded("genesis-chain-node-up")
             dockerProcess(*(baseArgs + listOf("up", "-d", "chain-node")).toTypedArray()).start().waitFor()
             waitForColdKeyInNodeContainer()
             coldAccountPubkey = extractColdPubkeyFromNodeContainer()
             Logger.info("Genesis cold ACCOUNT_PUBKEY extracted for api startup", "")
+            logVersiondComposeEnvironmentIfNeeded("genesis-full-stack-up")
             dockerProcess(*(baseArgs + listOf("up", "-d")).toTypedArray()).start().waitFor()
         } else {
             composeArgs.addAll(listOf("up", "-d"))
@@ -216,6 +218,7 @@ data class DockerGroup(
                     logInferenceStackContainers(pairName, "after-failed-chain-node-up")
                 }
             } else {
+                logVersiondComposeEnvironmentIfNeeded("genesis-up")
                 val dockerProcess = dockerProcess(*composeArgs.toTypedArray())
                 val process = dockerProcess.start()
                 process.inputStream.bufferedReader().use { it.lines().forEach { line -> Logger.info(line, "") } }
@@ -293,6 +296,8 @@ data class DockerGroup(
         }
         if (isGenesis && usesVersiondOverlay()) {
             ensureGenesisApiRunning()
+            getLocalInferencePairs(config).firstOrNull { it.name.trimStart('/') == pairName.trimStart('/') }
+                ?.logVersiondDiagnostics(devshardTestVersion())
         }
         // Just register the log events. Skip while versiond genesis is still settling —
         // initializeCluster will discover pairs after RPC readiness.
@@ -400,6 +405,8 @@ data class DockerGroup(
     }
 
     var coldAccountPubkey: String? = null
+
+    internal fun getCommonEnvMapForLogging(): Map<String, String> = getCommonEnvMap(useSnapshots)
 
     private fun getCommonEnvMap(useSnapshots: Boolean): Map<String, String> {
         return buildMap {

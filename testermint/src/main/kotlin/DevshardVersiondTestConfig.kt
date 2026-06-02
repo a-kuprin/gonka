@@ -23,9 +23,25 @@ private val resolvedDevshardTestVersion: String by lazy { resolveDevshardTestVer
 fun devshardTestVersion(): String = resolvedDevshardTestVersion
 
 private fun resolveDevshardTestVersion(): String {
-    System.getenv(DEVSHARD_VERSION_ENV)?.takeIf { it.isNotBlank() }?.let { return it }
-    readDevshardVersionStamp()?.let { return it }
-    makefileDevshardVersion()?.let { return it }
+    val envVersion = System.getenv(DEVSHARD_VERSION_ENV)?.takeIf { it.isNotBlank() }
+    if (envVersion != null) {
+        println("[devshard-version] resolved from env $DEVSHARD_VERSION_ENV=$envVersion")
+        return envVersion
+    }
+
+    val stampVersion = readDevshardVersionStamp()
+    if (stampVersion != null) {
+        println("[devshard-version] resolved from stamp $DEVSHARD_VERSION_STAMP=$stampVersion")
+        return stampVersion
+    }
+
+    val makeVersion = makefileDevshardVersion()
+    if (makeVersion != null) {
+        println("[devshard-version] resolved from make print-devshard-version=$makeVersion")
+        return makeVersion
+    }
+
+    println("[devshard-version] fallback to default version=dev")
     return "dev"
 }
 

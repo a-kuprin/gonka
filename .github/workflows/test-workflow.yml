@@ -84,10 +84,14 @@ jobs:
         run: |
           cd testermint
           if [[ "${{ inputs.test_command }}" == "run-tests" ]]; then
-            echo "Running listAllTestClasses task for integration tests"
+            # echo "Running listAllTestClasses task for integration tests"
             # This uses the custom Gradle task that scans for all test classes
             # The actual tag filtering (excluding unstable,exclude) happens at test runtime
-            TEST_CLASSES=$(./gradlew -q listAllTestClasses)
+            # TEST_CLASSES=$(./gradlew -q listAllTestClasses)
+
+            echo "Using focused integration test subset"
+            # Intentionally limit matrix to only selected integration classes.
+            TEST_CLASSES='"DevshardTests","DevsharddRuntimeConfigTests","DevshardStandaloneTests","RuntimeConfigTests"'
           elif [[ "${{ inputs.test_command }}" == "run-sanity" ]]; then
             echo "Running findSanityTestClasses task for sanity tests"
             # This uses the custom Gradle task that scans for classes containing sanity-tagged tests

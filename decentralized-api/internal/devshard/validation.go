@@ -58,14 +58,21 @@ func (v *ValidationAdapter) Validate(ctx context.Context, req devshard.ValidateR
 		v.recorder,
 		req.EpochID,
 		devshard.LegacySessionPayloadPath(req.EscrowID),
-		v.executeMLRequest,
+		func(ctx context.Context, model string, body []byte) (*http.Response, error) {
+			return v.executeMLRequest(ctx, req, model, body)
+		},
 		"devshard",
 		v.chainParams,
 		v.thresholds,
 	)
 }
 
-func (v *ValidationAdapter) executeMLRequest(ctx context.Context, model string, body []byte) (*http.Response, error) {
+func (v *ValidationAdapter) executeMLRequest(ctx context.Context, req devshard.ValidateRequest, model string, body []byte) (*http.Response, error) {
+	lockCall := broker.MLNodeLockCall{
+		Path:        "validate",
+		InferenceID: req.InferenceID,
+		EscrowID:    req.EscrowID,
+	}
 	lastReason := observability.ReasonAcquireErr
 	resp, err := broker.DoWithLockedNodeHTTPRetry(v.broker, model, nil, 3,
 		func(node *broker.Node) (*http.Response, *broker.ActionError) {
@@ -91,6 +98,7 @@ func (v *ValidationAdapter) executeMLRequest(ctx context.Context, model string, 
 			}
 			return httpResp, nil
 		},
+		lockCall,
 	)
 	if err != nil {
 		if lastReason == observability.ReasonOK {

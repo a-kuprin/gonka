@@ -17,6 +17,17 @@ const val DEVSHARD_VERSION_ENV = "DEVSHARD_VERSION"
 
 const val DEVSHARD_VERSION_STAMP = "build/devshard-version"
 
+/**
+ * State-root / settlement protocol tag (devshard/types), not versiond runtime name.
+ * Baked into devshardd/devshardctl via link flags; Testermint reads the same value from
+ * the build stamp (must match `make devshardd-build` / Makefile `DEVSHARD_PROTOCOL_VERSION`).
+ *
+ * Resolution order for [devshardStateRootProtocolVersion]:
+ * 1. `build/devshard-protocol-version` (written by `make devshardd-build`)
+ * 2. `make print-devshard-protocol-version`
+ */
+const val DEVSHARD_PROTOCOL_VERSION_STAMP = "build/devshard-protocol-version"
+
 const val DEVSHARD_OVERRIDE_BINARY_PATH = "/opt/overrides/devshardd"
 
 private val VERSIOND_ENV_LOG_KEYS =
@@ -29,8 +40,13 @@ private val VERSIOND_ENV_LOG_KEYS =
 
 private val resolvedDevshardTestVersion: String by lazy { resolveDevshardTestVersion() }
 
+private val resolvedDevshardProtocolVersion: String by lazy { resolveDevshardProtocolVersion() }
+
 /** Version name used for VERSIOND_FORCE and /devshard/<version>/ routes. */
 fun devshardTestVersion(): String = resolvedDevshardTestVersion
+
+/** State-root / settlement protocol tag for finalize and on-chain settlement. */
+fun devshardStateRootProtocolVersion(): String = resolvedDevshardProtocolVersion
 
 private fun resolveDevshardTestVersion(): String {
     val jvmEnv = System.getenv(DEVSHARD_VERSION_ENV)
@@ -93,6 +109,60 @@ private fun makefileDevshardVersion(): String? = runCatching {
     if (proc.waitFor() == 0 && out.isNotBlank()) out else null
 }.getOrNull()
 
+private fun resolveDevshardProtocolVersion(): String {
+    val stampPath = Path.of(getRepoRoot(), DEVSHARD_PROTOCOL_VERSION_STAMP)
+    Logger.info(
+        "[devshard-protocol-version] stamp path={} exists={}",
+        stampPath.toAbsolutePath(),
+        Files.isRegularFile(stampPath),
+    )
+    val stampVersion = readDevshardProtocolVersionStamp()
+    if (stampVersion != null) {
+        Logger.info(
+            "[devshard-protocol-version] resolved from stamp {}={}",
+            DEVSHARD_PROTOCOL_VERSION_STAMP,
+            stampVersion,
+        )
+        return stampVersion
+    }
+
+    val makeVersion = makefileDevshardProtocolVersion()
+    if (makeVersion != null) {
+        Logger.info(
+            "[devshard-protocol-version] resolved from make print-devshard-protocol-version={}",
+            makeVersion,
+        )
+        return makeVersion
+    }
+
+    Logger.warn("[devshard-protocol-version] fallback to default protocol version=v2")
+    return "v2"
+}
+
+private fun readDevshardProtocolVersionStamp(): String? = runCatching {
+    val stamp = Path.of(getRepoRoot(), DEVSHARD_PROTOCOL_VERSION_STAMP)
+    if (!Files.isRegularFile(stamp)) {
+        return@runCatching null
+    }
+    Files.readString(stamp).trim().takeIf { it.isNotBlank() }
+}.getOrNull()
+
+private fun makefileDevshardProtocolVersion(): String? = runCatching {
+    val proc =
+        ProcessBuilder(
+            "make",
+            "-s",
+            "--no-print-directory",
+            "-C",
+            getRepoRoot(),
+            "print-devshard-protocol-version",
+        )
+            .redirectErrorStream(true)
+            .start()
+    val out = proc.inputStream.bufferedReader().use { it.readText().trim() }
+    if (proc.waitFor() == 0 && out.isNotBlank()) out else null
+}.getOrNull()
+
 /** Maps version name to VERSIOND_OVERRIDE env suffix (dots -> underscores). */
 fun versiondOverrideEnvKey(version: String): String =
     "VERSIOND_OVERRIDE_${version.replace('.', '_')}"
@@ -118,6 +188,7 @@ fun logVersiondComposeEnvironment(pairName: String, composeEnv: Map<String, Stri
     val overrideKey = versiondOverrideEnvKey(version)
     Logger.info("[{}] versiond compose environment ({})", pairName, context)
     Logger.info("[{}]   devshardTestVersion={}", pairName, version)
+    Logger.info("[{}]   devshardStateRootProtocolVersion={}", pairName, devshardStateRootProtocolVersion())
     Logger.info("[{}]   devshardVersionedRoutePrefix={}", pairName, devshardVersionedRoutePrefix(version))
     VERSIOND_ENV_LOG_KEYS.forEach { key ->
         Logger.info("[{}]   {}={}", pairName, key, composeEnv[key]?.ifBlank { "<empty>" } ?: "<unset>")

@@ -27,9 +27,16 @@ state_root     = sha256(host_stats_hash || fees_be || rest_hash || version_hash 
 
 All hosts in a session must use the **same** protocol tag or signatures and settlement quorum will not align.
 
-The compile-time default for production binaries is `types.DevshardStateRootAndProtocolVersion` in `devshard/types/domain.go` (currently `"v2"` for Phase 1 composition: sealed accumulator + live inference set). Tests that exercise legacy composition often use `devshard/internal/testutil.RuntimeTestVersion` only for storage/runtime binding, not as a substitute for this constant in hash/settlement tests.
+The default in source is `types.DevshardStateRootAndProtocolVersion` in `devshard/types/domain.go` (currently `"v2"`). Release binaries set the link-time variable via `DEVSHARD_PROTOCOL_VERSION` at build (`-X devshard/types.buildStateRootProtocolVersion=…`); hosts call `types.EffectiveStateRootAndProtocolVersion()` (no runtime env). `make devshardd-build` writes `build/devshard-protocol-version` with the same value for Testermint assertions.
 
-Implementation: `devshard/state/hash.go`, `devshard/state/settlement.go`, chain keeper `VerifyDevshardSettlement`.
+```bash
+make devshardd-build DEVSHARD_PROTOCOL_VERSION=v2   # stamp + ldflags
+cat build/devshard-protocol-version               # Testermint reads this
+```
+
+Tests that exercise legacy composition often use `devshard/internal/testutil.RuntimeTestVersion` only for storage/runtime binding, not as a substitute for this tag in hash/settlement tests.
+
+Implementation: `devshard/types/protocol_version.go`, `devshard/state/hash.go`, `devshard/state/settlement.go`, chain keeper `VerifyDevshardSettlement`.
 
 ## When to bump `DevshardStateRootAndProtocolVersion`
 

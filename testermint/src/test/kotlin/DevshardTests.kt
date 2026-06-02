@@ -79,7 +79,7 @@ class DevshardTests : TestermintTest() {
         val escrowId = genesis.createDevshardEscrowForUser(escrowAmount, user.keyName, modelId = devshardEscrowModel)
 
         logSection("Starting devshard proxy")
-        val handle = genesis.startDevshardProxy(escrowId = escrowId, keyName = user.keyName)
+        val handle = genesis.startDevshardProxy(escrowId = escrowId, keyName = user.keyName, debugLogging = true)
 
         try {
             genesis.waitForDevshardProxyWarmup()
@@ -110,7 +110,7 @@ class DevshardTests : TestermintTest() {
         val escrowId = genesis.createDevshardEscrowForUser(escrowAmount, user.keyName, modelId = devshardEscrowModel)
 
         logSection("Starting devshard proxy")
-        val handle = genesis.startDevshardProxy(escrowId = escrowId, keyName = user.keyName)
+        val handle = genesis.startDevshardProxy(escrowId = escrowId, keyName = user.keyName, debugLogging = true)
 
         try {
             genesis.waitForDevshardProxyWarmup()
@@ -182,7 +182,7 @@ class DevshardTests : TestermintTest() {
 
         logSection("Starting $sessionCount devshard proxies")
         val handles = sessions.map { session ->
-            genesis.startDevshardProxy(escrowId = session.escrowId, keyName = session.keyName)
+            genesis.startDevshardProxy(escrowId = session.escrowId, keyName = session.keyName, debugLogging = true)
         }
 
         try {
@@ -298,7 +298,7 @@ class DevshardTests : TestermintTest() {
         val escrowId = genesis.createDevshardEscrowForUser(escrowAmount, user.keyName, modelId = devshardEscrowModel)
 
         logSection("Starting devshard proxy")
-        val handle = genesis.startDevshardProxy(escrowId, keyName = user.keyName)
+        val handle = genesis.startDevshardProxy(escrowId, keyName = user.keyName, debugLogging = true)
 
         try {
             genesis.waitForDevshardProxyWarmup()

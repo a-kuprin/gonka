@@ -371,6 +371,13 @@ func (s *Server) HandleInference(c echo.Context) (err error) {
 		}
 		return nil
 	}
+	logging.Debug("host_sse_receipt_flushed",
+		"subsystem", "server",
+		"escrow_id", s.host.EscrowID(),
+		"inference_id", resp.InferenceID,
+		"nonce", resp.Nonce,
+		"execution_expected", resp.ExecutionExpected,
+	)
 
 	finishReason := observability.ReasonOK
 	var finishFailureWhere observability.Where
@@ -385,7 +392,22 @@ func (s *Server) HandleInference(c echo.Context) (err error) {
 		}
 	} else if resp.ExecutionJob != nil {
 		resp.ExecutionJob.ResponseWriter = w
+		execStart := time.Now()
+		logging.Debug("host_run_execution_start",
+			"subsystem", "server",
+			"escrow_id", s.host.EscrowID(),
+			"inference_id", resp.InferenceID,
+			"nonce", resp.Nonce,
+		)
 		execResult, execErr := s.host.RunExecution(ctx, resp.ExecutionJob)
+		logging.Debug("host_run_execution_end",
+			"subsystem", "server",
+			"escrow_id", s.host.EscrowID(),
+			"inference_id", resp.InferenceID,
+			"nonce", resp.Nonce,
+			"duration_ms", time.Since(execStart).Milliseconds(),
+			"error", execErr,
+		)
 		if execErr != nil {
 			reason, where := observability.ErrorReason(execErr, observability.ReasonExecuteErr, observability.WhereHostExecute)
 			if errors.Is(ctx.Err(), context.Canceled) {

@@ -48,6 +48,7 @@ import (
 
 	devshardpkg "devshard"
 	devshardbridge "devshard/bridge"
+	devshardlogging "devshard/logging"
 	mlnodeclient "devshard/mlnode"
 	devshardobservability "devshard/observability"
 	devshardstorage "devshard/storage"
@@ -67,7 +68,7 @@ func main() {
 
 	oracleVersion := os.Getenv("DEVSHARD_BINARY_VERSION")
 	runtimeVersion, err := resolveRuntimeVersion(oracleVersion, Version)
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	devshardlogging.ConfigureSlogFromEnv()
 	slog.Info("devshardd starting",
 		"build_version", Version,
 		"oracle_version", oracleVersion,

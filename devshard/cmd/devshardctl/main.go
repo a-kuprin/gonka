@@ -12,6 +12,7 @@ import (
 
 	devshardpkg "devshard"
 	"devshard/bridge"
+	"devshard/logging"
 	"devshard/state"
 	"devshard/types"
 	"devshard/user"
@@ -48,6 +49,7 @@ type SlotSignatureJSON struct {
 var Version = "dev"
 
 func main() {
+	logging.ConfigureSlogFromEnv()
 	fs := flag.NewFlagSet("devshardctl", flag.ExitOnError)
 	escrowID := fs.String("escrow-id", "", "escrow ID (required, or DEVSHARD_ESCROW_ID env)")
 	chainREST := fs.String("chain-rest", "http://localhost:1317", "chain REST API URL")

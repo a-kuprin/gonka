@@ -236,7 +236,7 @@ fun LocalInferencePair.assertDevshardSettlement(
     user: DevshardTestUser,
     escrowAmount: Long,
     requireCompletedValidations: Boolean = false,
-    expectedVersion: String? = null,
+    expectedStateRootProtocolVersion: String = devshardStateRootProtocolVersion(),
 ): LocalInferencePair.DevshardctlResult {
     waitForDevshardPreFinalize()
     logSection("Finalizing via proxy")
@@ -245,9 +245,7 @@ fun LocalInferencePair.assertDevshardSettlement(
 
     logSection("Verifying settlement data")
     assertThat(result.parsed.escrowId).isEqualTo(escrowId.toString())
-    if (expectedVersion != null) {
-        assertThat(result.parsed.version).isEqualTo(expectedVersion)
-    }
+    assertThat(result.parsed.stateRootAndProtocolVersion).isEqualTo(expectedStateRootProtocolVersion)
     assertThat(result.parsed.nonce).isGreaterThan(0)
     assertThat(result.parsed.hostStats).isNotEmpty()
     assertThat(result.parsed.signatures).isNotEmpty()
@@ -279,10 +277,9 @@ fun LocalInferencePair.assertDevshardSettlement(
         .isEqualTo(result.parsed.fees.toString())
     assertThat(settleEvent.attributes.firstOrNull { it.key == "remainder" }?.value)
         .isEqualTo(expectedRemainder.toString())
-    if (expectedVersion != null) {
-        assertThat(settleEvent.attributes.firstOrNull { it.key == "version" }?.value)
-            .isEqualTo(expectedVersion)
-    }
+    assertThat(
+        settleEvent.attributes.firstOrNull { it.key == "state_root_and_protocol_version" }?.value,
+    ).isEqualTo(expectedStateRootProtocolVersion)
 
     logSection("Verifying escrow settled")
     val escrow = node.queryDevshardEscrow(escrowId)
@@ -294,26 +291,6 @@ fun LocalInferencePair.assertDevshardSettlement(
 
     return result
 }
-
-data class DevshardShardStatsDetail(
-    @SerializedName("escrow_id")
-    val escrowId: String,
-    @SerializedName("validation_observability")
-    val validationObservability: DevshardValidationObservability,
-)
-
-data class DevshardValidationObservability(
-    @SerializedName("by_slot")
-    val bySlot: Map<String, DevshardObservabilitySlotStats> = emptyMap(),
-    val totals: DevshardObservabilitySlotStats = DevshardObservabilitySlotStats(),
-)
-
-data class DevshardObservabilitySlotStats(
-    @SerializedName("required_validations")
-    val requiredValidations: Int = 0,
-    @SerializedName("completed_validations")
-    val completedValidations: Int = 0,
-)
 
 fun LocalInferencePair.getDevshardShardStatsDetail(escrowId: Long): DevshardShardStatsDetail {
     val url = "${api.getPublicUrl()}/v1/devshard/stats/shards/$escrowId"

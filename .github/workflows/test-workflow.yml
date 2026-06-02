@@ -176,6 +176,9 @@ jobs:
           echo "=== devshard version (make DEVSHARD_VERSION / build/devshard-version) ==="
           make -s print-devshard-version
           cat build/devshard-version
+          echo "=== devshard protocol version (DEVSHARD_PROTOCOL_VERSION / build/devshard-protocol-version) ==="
+          make -s print-devshard-protocol-version
+          cat build/devshard-protocol-version
           echo "=== Images immediately after build ==="
           docker images | head -20
 
@@ -206,6 +209,7 @@ jobs:
           path: |
             build/devshardd
             build/devshard-version
+            build/devshard-protocol-version
           retention-days: 1
 
       - name: Make Upgrade Build
@@ -273,6 +277,7 @@ jobs:
           chmod +x build/devshardd
           echo "=== devshard version stamp (for Testermint) ==="
           cat build/devshard-version 2>/dev/null || echo "(missing build/devshard-version)"
+          cat build/devshard-protocol-version 2>/dev/null || echo "(missing build/devshard-protocol-version)"
 
       - name: Install Make
         run: |

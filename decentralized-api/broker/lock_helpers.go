@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/productscience/inference/x/inference/types"
 )
@@ -77,11 +78,13 @@ func DoWithLockedNodeHTTPRetry(
 	skipNodeIDs []string,
 	maxAttempts int,
 	doPost func(node *Node) (*http.Response, *ActionError),
+	callOpts ...MLNodeLockCall,
 ) (*http.Response, error) {
 	var zero *http.Response
 	if maxAttempts <= 0 {
 		maxAttempts = 1
 	}
+	call := mergeMLNodeLockCall(callOpts)
 
 	skip := make(map[string]struct{}, len(skipNodeIDs))
 	orderedSkip := make([]string, 0, len(skipNodeIDs))
@@ -97,6 +100,11 @@ func DoWithLockedNodeHTTPRetry(
 	var lastErr error
 	attempts := 0
 
+	logging.Debug("ml_lock_wait_start", types.Inferences, call.fields(
+		"model", model,
+		"max_attempts", maxAttempts,
+		"skip_node_ids", orderedSkip,
+	)...)
 	logging.Info("HTTP retry helper: starting inference request", types.Inferences,
 		"model", model,
 		"max_attempts", maxAttempts,
@@ -106,14 +114,27 @@ func DoWithLockedNodeHTTPRetry(
 		attempts++
 
 		nodeChan := make(chan *Node, 2)
-		if err := b.QueueMessage(LockAvailableNode{Model: model, Response: nodeChan, SkipNodeIDs: orderedSkip}); err != nil {
+		waitStart := time.Now()
+		if err := b.QueueMessage(LockAvailableNode{
+			Model:       model,
+			Response:    nodeChan,
+			SkipNodeIDs: orderedSkip,
+			Call:        call,
+		}); err != nil {
 			logging.Info("HTTP retry helper: failed to queue LockAvailableNode", types.Inferences,
 				"attempt", attempts,
 				"error", err)
 			return zero, err
 		}
 		node := <-nodeChan
+		waitMs := time.Since(waitStart).Milliseconds()
 		if node == nil {
+			logging.Debug("ml_lock_wait_end", types.Inferences, call.fields(
+				"model", model,
+				"attempt", attempts,
+				"wait_ms", waitMs,
+				"acquired", false,
+			)...)
 			if lastErr != nil {
 				logging.Info("HTTP retry helper: no node available, returning last error", types.Inferences,
 					"attempt", attempts,
@@ -125,11 +146,27 @@ func DoWithLockedNodeHTTPRetry(
 			return zero, ErrNoNodesAvailable
 		}
 
+		logging.Debug("ml_lock_wait_end", types.Inferences, call.fields(
+			"model", model,
+			"attempt", attempts,
+			"wait_ms", waitMs,
+			"acquired", true,
+			"node_id", node.Id,
+		)...)
 		logging.Info("HTTP retry helper: acquired node lock", types.Inferences,
 			"attempt", attempts,
 			"node_id", node.Id)
 
+		mlStart := time.Now()
 		resp, aerr := doPost(node)
+		logging.Debug("ml_lock_http_done", types.Inferences, call.fields(
+			"model", model,
+			"attempt", attempts,
+			"node_id", node.Id,
+			"duration_ms", time.Since(mlStart).Milliseconds(),
+			"http_status", httpStatusOrZero(resp),
+			"error_kind", actionErrorKind(aerr),
+		)...)
 
 		// Decide outcome and retry policy
 		retry := false
@@ -271,4 +308,18 @@ func DoWithLockedNodeHTTPRetry(
 	logging.Info("HTTP retry helper: exhausted attempts, no nodes available", types.Inferences,
 		"max_attempts", maxAttempts)
 	return zero, ErrNoNodesAvailable
+}
+
+func httpStatusOrZero(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}
+
+func actionErrorKind(aerr *ActionError) string {
+	if aerr == nil {
+		return ""
+	}
+	return aerr.Kind.String()
 }

@@ -459,7 +459,16 @@ func (b *Broker) lockAvailableNode(command LockAvailableNode) {
 	if leastBusyNode != nil {
 		b.mu.Lock()
 		leastBusyNode.State.LockCount++
+		lockCount := leastBusyNode.State.LockCount
 		b.mu.Unlock()
+		logging.Debug("ml_lock_acquired", types.Nodes, command.Call.fields(
+			"model", command.Model,
+			"node_id", leastBusyNode.Node.Id,
+			"lock_count", lockCount,
+			"max_concurrent", leastBusyNode.Node.MaxConcurrent,
+		)...)
+	} else {
+		b.logNodePoolUnavailable(command.Model, command.SkipNodeIDs, command.Call)
 	}
 	logging.Debug("Locked node", types.Nodes, "node", leastBusyNode)
 	if leastBusyNode == nil {
@@ -556,9 +565,16 @@ func (b *Broker) releaseNode(command ReleaseNode) {
 		command.Response <- false
 		return
 	}
+	lockCount := node.State.LockCount
 	if !command.Outcome.IsSuccess() {
 		logging.Error("Node failed", types.Nodes, "node_id", command.NodeId, "reason", command.Outcome.GetMessage())
 	}
+	logging.Debug("ml_lock_released", types.Nodes,
+		"event", "ml_node_lock",
+		"node_id", command.NodeId,
+		"lock_count", lockCount,
+		"outcome_success", command.Outcome.IsSuccess(),
+	)
 	logging.Debug("Released node", types.Nodes, "node_id", command.NodeId)
 	command.Response <- true
 }

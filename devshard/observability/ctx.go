@@ -22,6 +22,7 @@ type MetricPhase string
 type TokenKind string
 
 const (
+	LevelDebug Level = "debug"
 	LevelInfo  Level = "info"
 	LevelWarn  Level = "warn"
 	LevelError Level = "error"
@@ -285,6 +286,8 @@ func Log(ctx context.Context, level Level, msg string, stage Stage, where Where,
 		logging.Error(msg, fields...)
 	case LevelWarn:
 		logging.Warn(msg, fields...)
+	case LevelDebug:
+		logging.Debug(msg, fields...)
 	default:
 		logging.Info(msg, fields...)
 	}

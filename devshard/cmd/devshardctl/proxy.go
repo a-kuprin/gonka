@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+
+	"devshard/logging"
 	"os"
 	"strconv"
 	"strings"
@@ -238,12 +240,22 @@ var timeoutBuffer = 5 * time.Second
 // nobody, but the timeout flow still runs because the network needs
 // MsgTimeoutInference recorded if the executor truly didn't finish.
 func (p *Proxy) runInference(ctx context.Context, params user.InferenceParams, w io.Writer, flag *cancelFlag) error {
+	escrowID := p.sm.SnapshotState().EscrowID
 	prepared, err := p.session.PrepareInference(params)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
 
 	nonce := prepared.Nonce()
+	if pw, ok := w.(*proxyWriter); ok && pw.trace != nil {
+		pw.trace.nonce = nonce
+	}
+	logging.Debug("proxy_inference_start",
+		"subsystem", "proxy",
+		"escrow_id", escrowID,
+		"nonce", nonce,
+		"model", params.Model,
+	)
 	if w != nil {
 		p.registry.register(nonce, w)
 		defer p.registry.unregister(nonce)
@@ -312,6 +324,17 @@ func (p *Proxy) runInference(ctx context.Context, params user.InferenceParams, w
 // 425, 429, network failures) keep the existing behavior: no receipt is returned
 // and runInference falls through to its deadline-based retry.
 func (p *Proxy) sendAndProcess(ctx context.Context, prepared *user.PreparedInference, nonce uint64, flag *cancelFlag) (finished bool, confirmedAt int64, err error) {
+	escrowID := p.sm.SnapshotState().EscrowID
+	sendStart := time.Now()
+	logging.Debug("proxy_sendonly_begin",
+		"subsystem", "proxy",
+		"escrow_id", escrowID,
+		"nonce", nonce,
+	)
+	done := make(chan struct{})
+	defer close(done)
+	go proxySendOnlySlowWatch(done, escrowID, nonce, sendStart)
+
 	sendCtx := ctx
 	if flag != nil {
 		var cancel context.CancelFunc
@@ -331,6 +354,15 @@ func (p *Proxy) sendAndProcess(ctx context.Context, prepared *user.PreparedInfer
 	}
 
 	resp, sendErr := p.session.SendOnly(sendCtx, prepared)
+	elapsedMs := time.Since(sendStart).Milliseconds()
+	logging.Debug("proxy_sendonly_end",
+		"subsystem", "proxy",
+		"escrow_id", escrowID,
+		"nonce", nonce,
+		"elapsed_ms", elapsedMs,
+		"send_err", sendErr,
+		"finished_in_mempool", resp != nil && hasMsgFinish(resp.Mempool, nonce),
+	)
 	if sendErr != nil && resp == nil {
 		if transport.IsFailFastHTTPError(sendErr) {
 			return false, 0, fmt.Errorf("host rejected inference: %w", sendErr)
@@ -417,6 +449,47 @@ func (p *Proxy) handleTimeout(ctx context.Context, prepared *user.PreparedInfere
 	return fmt.Errorf("inference %d timed out but insufficient votes to prove it", nonce)
 }
 
+// proxyInferenceTrace correlates proxy-side latency for one user inference.
+type proxyInferenceTrace struct {
+	start    time.Time
+	escrowID string
+	nonce    uint64
+	first    sync.Once
+}
+
+func (t *proxyInferenceTrace) logFirstByte(n int) {
+	if t == nil {
+		return
+	}
+	t.first.Do(func() {
+		logging.Debug("proxy_first_byte",
+			"subsystem", "proxy",
+			"escrow_id", t.escrowID,
+			"nonce", t.nonce,
+			"bytes", n,
+			"elapsed_ms", time.Since(t.start).Milliseconds(),
+		)
+	})
+}
+
+func proxySendOnlySlowWatch(done <-chan struct{}, escrowID string, nonce uint64, sendStart time.Time) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			logging.Debug("proxy_sendonly_slow",
+				"subsystem", "proxy",
+				"escrow_id", escrowID,
+				"nonce", nonce,
+				"elapsed_ms", time.Since(sendStart).Milliseconds(),
+			)
+		}
+	}
+}
+
 // proxyWriter delays WriteHeader(200) until the first Write call and
 // swallows all output once the client has disconnected. This is the
 // downstream side of the "decouple upstream from r.Context()" design:
@@ -426,9 +499,13 @@ type proxyWriter struct {
 	w       http.ResponseWriter
 	started bool
 	flag    *cancelFlag
+	trace   *proxyInferenceTrace
 }
 
 func (pw *proxyWriter) Write(p []byte) (int, error) {
+	if pw.trace != nil {
+		pw.trace.logFirstByte(len(p))
+	}
 	if pw.flag.Gone() {
 		// Client is gone; pretend success so callers don't error mid-protocol.
 		return len(p), nil
@@ -454,7 +531,10 @@ func (pw *proxyWriter) Flush() {
 
 func (p *Proxy) handleStreaming(w http.ResponseWriter, r *http.Request, params user.InferenceParams) {
 	flag := newCancelFlag()
-	pw := &proxyWriter{w: w, flag: flag}
+	pw := &proxyWriter{w: w, flag: flag, trace: &proxyInferenceTrace{
+		start:    time.Now(),
+		escrowID: p.sm.SnapshotState().EscrowID,
+	}}
 	watchClientCancel(r, flag)
 
 	// Upstream work is intentionally NOT bound to r.Context(): the host

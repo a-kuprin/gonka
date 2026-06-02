@@ -927,6 +927,21 @@ func (h *Host) signReceipt(req HostRequest) ([]byte, int64, *devshard.ExecuteReq
 		h.executing[start.InferenceId] = struct{}{}
 		outcome.executionExpected = true
 		outcome.reason = observability.ReasonOK
+		validatingCount := len(h.validating)
+		queueDepth := 0
+		if h.validationQueue != nil {
+			queueDepth = len(h.validationQueue)
+		}
+		logging.Debug("execute_scheduled",
+			"subsystem", "host",
+			"escrow_id", h.escrowID,
+			"inference_id", start.InferenceId,
+			"nonce", req.Nonce,
+			"model", start.Model,
+			"executing_count", len(h.executing),
+			"validating_count", validatingCount,
+			"validation_queue_depth", queueDepth,
+		)
 
 		job := &devshard.ExecuteRequest{
 			InferenceID: start.InferenceId,
@@ -966,7 +981,21 @@ func (h *Host) RunExecution(ctx context.Context, job *devshard.ExecuteRequest) (
 
 	defer h.ReleaseExecution(inferenceID)
 
+	execStart := time.Now()
+	logging.Debug("execute_ml_begin",
+		"subsystem", "host",
+		"escrow_id", h.escrowID,
+		"inference_id", inferenceID,
+		"model", job.Model,
+	)
 	result, err := h.engine.Execute(ctx, *job)
+	logging.Debug("execute_ml_end",
+		"subsystem", "host",
+		"escrow_id", h.escrowID,
+		"inference_id", inferenceID,
+		"duration_ms", time.Since(execStart).Milliseconds(),
+		"error", err,
+	)
 	if err != nil {
 		reason, where := observability.ErrorReason(err, observability.ReasonExecuteErr, observability.WhereHostExecute)
 		return nil, observability.FailReceiptOrphan(ctx, h.escrowID, reason, where,
@@ -1141,6 +1170,14 @@ func (h *Host) enqueueValidation(job validateJob) {
 	case h.validationQueue <- job:
 		observability.IncValidation(observability.StageValidationPicked, observability.MetricStatusQueued)
 		observability.SetValidationQueueDepth(h.escrowID, len(h.validationQueue))
+		logging.Debug("validation_enqueued",
+			"subsystem", "host",
+			"escrow_id", h.escrowID,
+			"inference_id", job.inferenceID,
+			"validator_slot", job.validatorSlot,
+			"validation_flow", string(job.flow),
+			"validation_queue_depth", len(h.validationQueue),
+		)
 	default:
 		h.mu.Lock()
 		delete(h.validating, job.inferenceID)
@@ -1176,12 +1213,37 @@ func (h *Host) hasMempoolValidationOrVote(infID uint64) bool {
 // Called outside the mutex.
 func (h *Host) validateAsync(ctx context.Context, job validateJob) {
 	ctx = logging.WithRequestID(ctx, fmt.Sprintf("validate-%d", job.inferenceID))
+	h.mu.Lock()
+	validatingCount := len(h.validating)
+	queueDepth := 0
+	if h.validationQueue != nil {
+		queueDepth = len(h.validationQueue)
+	}
+	executingCount := len(h.executing)
+	h.mu.Unlock()
+
 	observability.IncValidation(observability.StageValidationStarted, observability.MetricStatusOK)
-	observability.Log(ctx, observability.LevelInfo, "validation started", observability.StageValidationStarted, observability.WhereHostValidate, h.escrowID, "", nil,
+	observability.Log(ctx, observability.LevelDebug, "validation started", observability.StageValidationStarted, observability.WhereHostValidate, h.escrowID, "", nil,
 		"inference_id", job.inferenceID,
 		"executor_address", job.executorAddress,
 		"validator_slot", job.validatorSlot,
-		"validation_flow", string(job.flow))
+		"validation_flow", string(job.flow),
+		"validating_count", validatingCount,
+		"validation_queue_depth", queueDepth,
+		"executing_count", executingCount,
+	)
+	logging.Debug("validation_ml_begin",
+		"subsystem", "host",
+		"escrow_id", h.escrowID,
+		"inference_id", job.inferenceID,
+		"validator_slot", job.validatorSlot,
+		"validation_flow", string(job.flow),
+		"model", job.model,
+		"validating_count", validatingCount,
+		"validation_queue_depth", queueDepth,
+		"executing_count", executingCount,
+	)
+	validateStart := time.Now()
 	defer func() {
 		h.mu.Lock()
 		delete(h.validating, job.inferenceID)
@@ -1202,6 +1264,16 @@ func (h *Host) validateAsync(ctx context.Context, job validateJob) {
 		ExecutorAddress: job.executorAddress,
 		EpochID:         job.epochID,
 	})
+	logging.Debug("validation_ml_end",
+		"subsystem", "host",
+		"escrow_id", h.escrowID,
+		"inference_id", job.inferenceID,
+		"validator_slot", job.validatorSlot,
+		"validation_flow", string(job.flow),
+		"duration_ms", time.Since(validateStart).Milliseconds(),
+		"error", err,
+		"valid", result != nil && result.Valid,
+	)
 	if err != nil {
 		// Payload already pruned on the executor: the validation window is
 		// effectively over for us. Drop silently -- no MsgValidation, no

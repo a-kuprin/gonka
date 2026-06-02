@@ -50,12 +50,19 @@ func (e *EngineAdapter) Execute(ctx context.Context, req devshard.ExecuteRequest
 		req,
 		e.payloadStore,
 		req.EpochID,
-		e.executeMLRequest,
+		func(ctx context.Context, model string, body []byte) (*http.Response, error) {
+			return e.executeMLRequest(ctx, req, model, body)
+		},
 		e.chainParams,
 	)
 }
 
-func (e *EngineAdapter) executeMLRequest(ctx context.Context, model string, body []byte) (*http.Response, error) {
+func (e *EngineAdapter) executeMLRequest(ctx context.Context, req devshard.ExecuteRequest, model string, body []byte) (*http.Response, error) {
+	lockCall := broker.MLNodeLockCall{
+		Path:        "execute",
+		InferenceID: req.InferenceID,
+		EscrowID:    req.EscrowID,
+	}
 	lastReason := observability.ReasonAcquireErr
 	resp, err := broker.DoWithLockedNodeHTTPRetry(e.broker, model, nil, 3,
 		func(node *broker.Node) (*http.Response, *broker.ActionError) {
@@ -81,6 +88,7 @@ func (e *EngineAdapter) executeMLRequest(ctx context.Context, model string, body
 			}
 			return httpResp, nil
 		},
+		lockCall,
 	)
 	if err != nil {
 		if lastReason == observability.ReasonOK {

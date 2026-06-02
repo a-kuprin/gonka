@@ -99,8 +99,9 @@ type statsShardDetailResponse struct {
 	Version         string                    `json:"version"`
 	CachedAt        int64                     `json:"cached_at"`
 	CacheTTLSeconds int64                     `json:"cache_ttl_seconds"`
-	HostStats       map[uint32]statsHostStats `json:"host_stats"`
-	Group           []types.SlotAssignment    `json:"group"`
+	HostStats              map[uint32]statsHostStats      `json:"host_stats"`
+	ValidationObservability statsValidationObservability `json:"validation_observability"`
+	Group                  []types.SlotAssignment       `json:"group"`
 }
 
 type statsHostStats struct {
@@ -109,6 +110,13 @@ type statsHostStats struct {
 	Cost                 uint64 `json:"cost"`
 	RequiredValidations  uint32 `json:"required_validations"`
 	CompletedValidations uint32 `json:"completed_validations"`
+}
+
+// statsValidationObservability exposes validation counters persisted outside the
+// state root (survives host restart; not used for settlement).
+type statsValidationObservability struct {
+	BySlot map[uint32]statsHostStats `json:"by_slot"`
+	Totals statsHostStats            `json:"totals"`
 }
 
 func NewHostManager(
@@ -631,14 +639,15 @@ func (m *HostManager) statsShardDetail(escrowID string, now time.Time) (*statsSh
 	st := srv.Host().SnapshotState()
 
 	resp := &statsShardDetailResponse{
-		EscrowID:        escrowID,
-		EpochID:         sess.EpochID,
-		Nonce:           st.LatestNonce,
-		Version:         st.StateRootAndProtocolVersion,
-		CachedAt:        now.Unix(),
-		CacheTTLSeconds: int64(statsCacheTTL / time.Second),
-		HostStats:       statsHostStatsFromState(st.HostStats),
-		Group:           append([]types.SlotAssignment(nil), st.Group...),
+		EscrowID:                escrowID,
+		EpochID:                 sess.EpochID,
+		Nonce:                   st.LatestNonce,
+		Version:                 st.StateRootAndProtocolVersion,
+		CachedAt:                now.Unix(),
+		CacheTTLSeconds:         int64(statsCacheTTL / time.Second),
+		HostStats:               statsHostStatsFromState(st.HostStats),
+		ValidationObservability: validationObservabilityFromStore(m.store, escrowID),
+		Group:                   append([]types.SlotAssignment(nil), st.Group...),
 	}
 
 	m.statsMu.Lock()
@@ -703,6 +712,32 @@ func statsHostStatsFromState(src map[uint32]*types.HostStats) map[uint32]statsHo
 		}
 	}
 	return dst
+}
+
+func validationObservabilityFromStore(store storage.Storage, escrowID string) statsValidationObservability {
+	out := statsValidationObservability{
+		BySlot: make(map[uint32]statsHostStats),
+	}
+	if store == nil {
+		return out
+	}
+	rows, err := store.GetValidationObservability(escrowID)
+	if err != nil {
+		logging.Warn("validation observability read failed", inferenceTypes.System,
+			"escrow_id", escrowID,
+			"error", err,
+		)
+		return out
+	}
+	for _, row := range rows {
+		out.BySlot[row.SlotID] = statsHostStats{
+			RequiredValidations:  row.RequiredValidations,
+			CompletedValidations: row.CompletedValidations,
+		}
+		out.Totals.RequiredValidations += row.RequiredValidations
+		out.Totals.CompletedValidations += row.CompletedValidations
+	}
+	return out
 }
 
 func statsHTTPError(err error) error {

@@ -433,6 +433,16 @@ func TestStatsShardDetailReturnsStatsOnly(t *testing.T) {
 			RequiredValidations  uint32 `json:"required_validations"`
 			CompletedValidations uint32 `json:"completed_validations"`
 		} `json:"host_stats"`
+		ValidationObservability struct {
+			BySlot map[string]struct {
+				RequiredValidations  uint32 `json:"required_validations"`
+				CompletedValidations uint32 `json:"completed_validations"`
+			} `json:"by_slot"`
+			Totals struct {
+				RequiredValidations  uint32 `json:"required_validations"`
+				CompletedValidations uint32 `json:"completed_validations"`
+			} `json:"totals"`
+		} `json:"validation_observability"`
 		Group []types.SlotAssignment `json:"group"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))

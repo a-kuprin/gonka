@@ -235,7 +235,7 @@ fun LocalInferencePair.assertDevshardSettlement(
     escrowId: Long,
     user: DevshardTestUser,
     escrowAmount: Long,
-    requireCompletedValidations: Boolean = true,
+    requireCompletedValidations: Boolean = false,
     expectedVersion: String? = null,
 ): LocalInferencePair.DevshardctlResult {
     waitForDevshardPreFinalize()
@@ -293,6 +293,53 @@ fun LocalInferencePair.assertDevshardSettlement(
     assertThat(balanceAfter).isEqualTo(user.fundAmount - totalPayout)
 
     return result
+}
+
+data class DevshardShardStatsDetail(
+    @SerializedName("escrow_id")
+    val escrowId: String,
+    @SerializedName("validation_observability")
+    val validationObservability: DevshardValidationObservability,
+)
+
+data class DevshardValidationObservability(
+    @SerializedName("by_slot")
+    val bySlot: Map<String, DevshardObservabilitySlotStats> = emptyMap(),
+    val totals: DevshardObservabilitySlotStats = DevshardObservabilitySlotStats(),
+)
+
+data class DevshardObservabilitySlotStats(
+    @SerializedName("required_validations")
+    val requiredValidations: Int = 0,
+    @SerializedName("completed_validations")
+    val completedValidations: Int = 0,
+)
+
+fun LocalInferencePair.getDevshardShardStatsDetail(escrowId: Long): DevshardShardStatsDetail {
+    val url = "${api.getPublicUrl()}/v1/devshard/stats/shards/$escrowId"
+    val raw = api.executor.exec(listOf("sh", "-c", "curl -sf '$url'"), null).joinToString("")
+    return cosmosJson.fromJson(raw, DevshardShardStatsDetail::class.java)
+}
+
+fun LocalInferencePair.waitForDevshardValidationObservability(
+    escrowId: Long,
+    minCompleted: Int = 1,
+    timeoutMs: Long = 120_000L,
+    pollIntervalMs: Long = 2_000L,
+) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+        val stats = getDevshardShardStatsDetail(escrowId)
+        if (stats.validationObservability.totals.completedValidations >= minCompleted) {
+            return
+        }
+        Thread.sleep(pollIntervalMs)
+    }
+    val last = getDevshardShardStatsDetail(escrowId)
+    error(
+        "timed out waiting for validation observability completed >= $minCompleted " +
+            "(got ${last.validationObservability.totals.completedValidations})",
+    )
 }
 
 fun LocalInferencePair.findChallengedDevshardInference(

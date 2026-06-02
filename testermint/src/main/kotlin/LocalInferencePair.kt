@@ -70,6 +70,7 @@ fun getLocalInferencePairs(config: ApplicationConfig): List<LocalInferencePair> 
     val mocks = containers.filter { it.image == config.mockImageName }
     var foundPairs = 0
     if (nodes.size != apis.size) {
+        logClusterPairMismatch(config, nodes, apis, "getLocalInferencePairs")
         Logger.error("Number of nodes (${nodes.size}) does not match number of APIs (${apis.size}). Tearing down containers")
         nodes.forEach{
             dockerClient.stopContainerCmd(it.id).exec()

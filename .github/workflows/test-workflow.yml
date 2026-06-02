@@ -307,6 +307,39 @@ jobs:
       - name: Run Tests (Non-Matrix)
         if: ${{ !inputs.use_matrix }}
         run: sudo make ${{ inputs.test_command }}
+
+      - name: Dump inference Docker logs on failure
+        if: failure()
+        run: |
+          set -x
+          DUMP_DIR=testermint/logs/docker-dump
+          mkdir -p "$DUMP_DIR"
+          sudo docker ps -a > "$DUMP_DIR/all-containers.txt" 2>&1 || true
+          for name in genesis join1 join2; do
+            for svc in node api postgres proxy mock-server; do
+              c="${name}-${svc}"
+              if sudo docker inspect "$c" >/dev/null 2>&1; then
+                echo "=== inspect $c ===" >> "$DUMP_DIR/inspect.txt"
+                sudo docker inspect "$c" --format 'state={{.State.Status}} exit={{.State.ExitCode}} err={{.State.Error}}' >> "$DUMP_DIR/inspect.txt" 2>&1 || true
+                sudo docker logs --tail 200 "$c" > "$DUMP_DIR/${c}.log" 2>&1 || true
+              else
+                echo "missing container: $c" >> "$DUMP_DIR/missing.txt"
+              fi
+            done
+          done
+          if [ -d local-test-net ]; then
+            (
+              cd local-test-net
+              echo "=== compose -p genesis ps -a ===" >> "../$DUMP_DIR/compose-ps.txt"
+              sudo docker compose -p genesis -f docker-compose-base.yml -f docker-compose.genesis.yml ps -a >> "../$DUMP_DIR/compose-ps.txt" 2>&1 || true
+              for p in join1 join2; do
+                echo "=== compose -p $p ps -a ===" >> "../$DUMP_DIR/compose-ps.txt"
+                sudo docker compose -p "$p" -f docker-compose-base.yml -f docker-compose.join.yml ps -a >> "../$DUMP_DIR/compose-ps.txt" 2>&1 || true
+              done
+            )
+          fi
+          echo "Docker dump written under $DUMP_DIR"
+
       - name: Archive Test Results XML
         if: always()
         uses: actions/upload-artifact@v4

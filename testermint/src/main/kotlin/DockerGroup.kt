@@ -209,11 +209,19 @@ data class DockerGroup(
                 // This will allow us to get our consensus key and add the participant BEFORE we launch the API
                 composeArgs.add("chain-node")
             }
-            val dockerProcess = dockerProcess(*composeArgs.toTypedArray())
-            val process = dockerProcess.start()
-            process.inputStream.bufferedReader().use { it.lines().forEach { line -> Logger.info(line, "") } }
-            process.errorStream.bufferedReader().use { it.lines().forEach { line -> Logger.info(line, "") } }
-            process.waitFor()
+            if (!isGenesis) {
+                val exitCode = runComposeLogged("join-chain-node-up", *composeArgs.toTypedArray())
+                if (exitCode != 0) {
+                    logComposeProjectState("after-failed-chain-node-up")
+                    logInferenceStackContainers(pairName, "after-failed-chain-node-up")
+                }
+            } else {
+                val dockerProcess = dockerProcess(*composeArgs.toTypedArray())
+                val process = dockerProcess.start()
+                process.inputStream.bufferedReader().use { it.lines().forEach { line -> Logger.info(line, "") } }
+                process.errorStream.bufferedReader().use { it.lines().forEach { line -> Logger.info(line, "") } }
+                process.waitFor()
+            }
         }
         if (!isGenesis) {
             Thread.sleep(Duration.ofSeconds(10))
@@ -248,10 +256,40 @@ data class DockerGroup(
             if (additionalForPair.any { it.contains("versiond") }) {
                 joinServices.add("versiond")
             }
-            val startRemainingArgs = baseArgs + joinServices
+            val startRemainingArgs = baseArgs + listOf("up", "-d") + joinServices
             this.coldAccountPubkey = node.getColdPubKey()
-            dockerProcess(*startRemainingArgs.toTypedArray()).start().waitFor()
+            Logger.info(
+                "[{}] Starting join inference stack after registration: {}",
+                pairName,
+                joinServices.joinToString(),
+            )
+            val stackExit = runComposeLogged(
+                "join-inference-stack-up",
+                *startRemainingArgs.toTypedArray(),
+            )
+            logComposeProjectState("after-inference-stack-up")
+            logInferenceStackContainers(pairName, "after-inference-stack-up")
+            val apiContainer = "$pairName-api"
+            if (stackExit != 0 || !dockerContainerRunning(apiContainer)) {
+                Logger.error(
+                    "[{}] {} not running after compose up (exit={}); dumping logs",
+                    pairName,
+                    apiContainer,
+                    stackExit,
+                )
+                tailDockerLogs(apiContainer, lines = 150, context = "join-api-not-running")
+                tailDockerLogs("$pairName-postgres", lines = 80, context = "join-postgres")
+                tailDockerLogs("$pairName-proxy", lines = 40, context = "join-proxy")
+            }
             Thread.sleep(Duration.ofSeconds(10))
+            if (!dockerContainerRunning(apiContainer)) {
+                logComposeProjectState("after-wait-api-still-down")
+                logInferenceStackContainers(pairName, "after-wait-api-still-down")
+                error(
+                    "$apiContainer not running after join stack up (compose exit=$stackExit). " +
+                        "See testermint/logs for compose + docker log output.",
+                )
+            }
         }
         if (isGenesis && usesVersiondOverlay()) {
             ensureGenesisApiRunning()
@@ -259,6 +297,9 @@ data class DockerGroup(
         // Just register the log events. Skip while versiond genesis is still settling —
         // initializeCluster will discover pairs after RPC readiness.
         if (!(isGenesis && usesVersiondOverlay())) {
+            if (!isGenesis) {
+                logInferenceStackContainers(pairName, "before-getLocalInferencePairs")
+            }
             getLocalInferencePairs(config)
         }
         print(

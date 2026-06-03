@@ -25,10 +25,11 @@ WASMVM_STATIC_DARWIN_URL := https://github.com/CosmWasm/wasmvm/releases/download
 WASMVM_STATIC_LINUX_X64_URL := https://github.com/CosmWasm/wasmvm/releases/download/$(WASMVM_VERSION)/libwasmvm_muslc.x86_64.a
 WASMVM_STATIC_LINUX_ARM64_URL := https://github.com/CosmWasm/wasmvm/releases/download/$(WASMVM_VERSION)/libwasmvm_muslc.aarch64.a
 
-USE_REGISTRY_CACHE ?= 0
+include ../scripts/registry-cache.mk
+
 ifeq ($(USE_REGISTRY_CACHE),1)
-DOCKER_CACHE_ARGS := --cache-from type=registry,ref=ghcr.io/gonka-ai/inferenced:buildcache --cache-to type=registry,ref=ghcr.io/gonka-ai/inferenced:buildcache,mode=min
-DOCKER_CACHE_ARGS_UPGRADE := --cache-from type=registry,ref=ghcr.io/gonka-ai/inferenced:buildcache-upgrade --cache-to type=registry,ref=ghcr.io/gonka-ai/inferenced:buildcache-upgrade,mode=min
+DOCKER_CACHE_ARGS := $(call registry_cache_args,ghcr.io/gonka-ai/inferenced:buildcache)
+DOCKER_CACHE_ARGS_UPGRADE := $(call registry_cache_args,ghcr.io/gonka-ai/inferenced:buildcache-upgrade)
 DOCKER_BUILD_PREFIX := docker buildx build --load $(DOCKER_CACHE_ARGS)
 DOCKER_BUILD_UPGRADE_PREFIX := docker buildx build $(DOCKER_CACHE_ARGS_UPGRADE)
 else

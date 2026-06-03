@@ -164,6 +164,8 @@ jobs:
         env:
           GENESIS_OVERRIDES_FILE: "inference-chain/test_genesis_overrides.json"
           USE_REGISTRY_CACHE: "1"
+          # Forks can read gonka-ai GHCR cache but cannot push cache layers back.
+          USE_REGISTRY_CACHE_WRITE: ${{ github.repository == 'gonka-ai/gonka' && '1' || '0' }}
         run: |
           make build-docker
           make devshardd-build

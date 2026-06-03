@@ -382,14 +382,7 @@ data class DockerGroup(
         error("$apiContainer did not stay running (check: docker logs $apiContainer)")
     }
 
-    private fun dockerContainerRunning(containerName: String): Boolean {
-        val proc = ProcessBuilder("docker", "inspect", "-f", "{{.State.Running}}", containerName)
-            .redirectErrorStream(true)
-            .start()
-        val out = proc.inputStream.bufferedReader().use { it.readText().trim() }
-        proc.waitFor()
-        return proc.exitValue() == 0 && out == "true"
-    }
+    private fun dockerContainerRunning(containerName: String): Boolean = isDockerContainerRunning(containerName)
 
     fun tearDownExisting() {
         Logger.info("Tearing down existing docker group with keyName={}", pairName)
@@ -622,6 +615,64 @@ fun getRepoRoot(): String {
         ?: throw IllegalStateException("Repository root not found from $currentDir (set GONKA_REPO_ROOT to override)")
 }
 
+private fun isDockerContainerRunning(containerName: String): Boolean {
+    val proc = ProcessBuilder("docker", "inspect", "-f", "{{.State.Running}}", containerName)
+        .redirectErrorStream(true)
+        .start()
+    val out = proc.inputStream.bufferedReader().use { it.readText().trim() }
+    proc.waitFor()
+    return proc.exitValue() == 0 && out == "true"
+}
+
+private fun pairRpcSynced(pair: LocalInferencePair, minHeight: Long = 1): Boolean =
+    runCatching {
+        val status = pair.node.getStatus()
+        status.syncInfo.latestBlockHeight >= minHeight && !status.syncInfo.catchingUp
+    }.getOrDefault(false)
+
+private fun pairApiResponding(pair: LocalInferencePair): Boolean {
+    val apiContainer = "${pair.name.trimStart('/')}-api"
+    if (!isDockerContainerRunning(apiContainer)) {
+        return false
+    }
+    return runCatching {
+        pair.getParams()
+        true
+    }.getOrDefault(false)
+}
+
+private fun waitForClusterReadyBeforeInitialize(
+    cluster: LocalCluster,
+    timeout: Duration = Duration.ofSeconds(90),
+) {
+    Logger.info("Waiting for cluster readiness (RPC synced, APIs up)", "")
+    val deadline = System.nanoTime() + timeout.toNanos()
+    while (System.nanoTime() < deadline) {
+        if (!pairRpcSynced(cluster.genesis) || !pairApiResponding(cluster.genesis)) {
+            Thread.sleep(1000)
+            continue
+        }
+        val genesisHeight = runCatching { cluster.genesis.getCurrentBlockHeight() }.getOrNull()
+        val joinsReady = cluster.joinPairs.all { join ->
+            pairRpcSynced(join) &&
+                pairApiResponding(join) &&
+                (genesisHeight == null || runCatching {
+                    kotlin.math.abs(join.getCurrentBlockHeight() - genesisHeight) <= 2
+                }.getOrDefault(false))
+        }
+        if (joinsReady) {
+            Logger.info(
+                "Cluster ready for initialize (genesis block {}, {} join(s))",
+                genesisHeight,
+                cluster.joinPairs.size,
+            )
+            return
+        }
+        Thread.sleep(1000)
+    }
+    error("Cluster not ready for initialize within ${timeout.seconds} seconds")
+}
+
 fun initializeCluster(joinCount: Int = 0, config: ApplicationConfig, currentCluster: LocalCluster?): List<DockerGroup> {
     TestState.rebooting = true
     try {
@@ -672,7 +723,22 @@ fun initializeCluster(joinCount: Int = 0, config: ApplicationConfig, currentClus
             ?: error("Could not find local inference pair for keyName=${genesisGroup.pairName}")
         Logger.info("Waiting for genesis API and ML nodes readiness", "")
         genesisPair.waitForMlNodesToLoad(maxWaitAttempts = 18)
-        joinGroups.forEach { it.init() }
+        if (joinGroups.isNotEmpty()) {
+            val failures = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+            joinGroups.map { group ->
+                Thread {
+                    try {
+                        group.init()
+                    } catch (e: Throwable) {
+                        failures.add(e)
+                    }
+                }.apply {
+                    name = "join-init-${group.pairName}"
+                    start()
+                }
+            }.forEach { it.join() }
+            failures.firstOrNull()?.let { throw it }
+        }
         return allGroups
     } finally {
         TestState.rebooting = false
@@ -693,7 +759,7 @@ fun initCluster(
     val rebootFlagOn = Files.deleteIfExists(Path.of("reboot.txt"))
     val cluster = try {
         val c = setupLocalCluster(joinCount, finalConfig, reboot || rebootFlagOn)
-        Thread.sleep(50000)
+        waitForClusterReadyBeforeInitialize(c)
         logSection("Found cluster, initializing")
         initialize(c.allPairs, resetMlNodes = resetMlNodes)
         c

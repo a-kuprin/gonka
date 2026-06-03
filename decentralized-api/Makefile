@@ -92,9 +92,9 @@ build: download-linux-deps
 
 build-docker:
 	rm -rf build/
-	$(eval PLATFORM=linux/amd64)
-	$(eval GOOS=linux)
-	$(eval GOARCH=amd64)
+	$(eval PLATFORM=$(DOCKER_PLATFORM))
+	$(eval GOOS=$(DOCKER_GOOS))
+	$(eval GOARCH=$(DOCKER_GOARCH))
 	$(eval DOCKER_FILE=Dockerfile)
 	$(eval DOCKER_TAG=ghcr.io/product-science/api:$(VERSION))
 	$(DOCKER_BUILD)

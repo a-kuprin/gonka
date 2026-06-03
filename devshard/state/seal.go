@@ -184,10 +184,8 @@ func (sm *StateMachine) drainLiveIntoSealedAccLocked(sealNonce uint64) error {
 		cur = FoldSealedAccumulator(cur, sealNonce, id, entry)
 		sm.sealedNonces[id] = sealNonce
 		delete(sm.committedEntries, id)
-		if sm.inferenceStore != nil {
-			if err := sm.persistSealedInferenceLocked(id, sealNonce, rec); err != nil {
-				return fmt.Errorf("persist sealed inference %d during drain: %w", id, err)
-			}
+		if err := sm.upsertInferenceObsLocked(id, sealNonce, rec); err != nil {
+			return fmt.Errorf("persist sealed inference %d during drain: %w", id, err)
 		}
 		delete(sm.state.Inferences, id)
 	}
@@ -218,10 +216,8 @@ func (sm *StateMachine) SealInference(id uint64) error {
 	sm.state.SealedAcc = append([]byte(nil), cur[:]...)
 	delete(sm.committedEntries, id)
 
-	if sm.inferenceStore != nil {
-		if err := sm.persistSealedInferenceLocked(id, sealedNonce, rec); err != nil {
-			return err
-		}
+	if err := sm.upsertInferenceObsLocked(id, sealedNonce, rec); err != nil {
+		return err
 	}
 	delete(sm.state.Inferences, id)
 	return nil
@@ -230,9 +226,6 @@ func (sm *StateMachine) SealInference(id uint64) error {
 // LookupSealedInference returns the inference record persisted at seal time
 // (observability only; not part of the state root).
 func (sm *StateMachine) LookupSealedInference(id uint64) (types.InferenceRecord, bool) {
-	if sm.inferenceStore == nil {
-		return types.InferenceRecord{}, false
-	}
 	row, ok, err := sm.inferenceStore.GetSealedInference(sm.state.EscrowID, id)
 	if err != nil || !ok || !row.ObsPresent {
 		return types.InferenceRecord{}, false
@@ -244,9 +237,6 @@ func (sm *StateMachine) RebuildSealedInferenceIndex() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if sm.inferenceStore == nil {
-		return nil
-	}
 	if err := sm.inferenceStore.DeleteSealedInferences(sm.state.EscrowID); err != nil {
 		return err
 	}
@@ -276,12 +266,24 @@ func (sm *StateMachine) RebuildSealedInferenceIndex() error {
 	return nil
 }
 
-func (sm *StateMachine) persistSealedInferenceLocked(id, sealedNonce uint64, rec *types.InferenceRecord) error {
+// persistLiveInferenceObsLocked upserts the current live inference snapshot
+// (e.g. on StatusChallenged) before RAM prune. Caller must hold sm.mu.
+func (sm *StateMachine) persistLiveInferenceObsLocked(id uint64, rec *types.InferenceRecord) error {
+	sealNonce, _ := sm.sealedNonces[id]
+	return sm.upsertInferenceObsLocked(id, sealNonce, rec)
+}
+
+// upsertInferenceObsLocked writes or updates the observability row for an inference.
+// On seal, DrainInferenceValidationObs moves live validation counters into sealed storage.
+// Caller must hold sm.mu.
+func (sm *StateMachine) upsertInferenceObsLocked(id, sealedNonce uint64, rec *types.InferenceRecord) error {
 	if err := sm.inferenceStore.InsertSealedInference(sm.state.EscrowID, inferenceObsRow(id, sealedNonce, rec)); err != nil {
 		return err
 	}
-	if err := sm.inferenceStore.DrainInferenceValidationObs(sm.state.EscrowID, id); err != nil {
-		return fmt.Errorf("drain validation obs: %w", err)
+	if sealedNonce > 0 {
+		if err := sm.inferenceStore.DrainInferenceValidationObs(sm.state.EscrowID, id); err != nil {
+			return fmt.Errorf("drain validation obs: %w", err)
+		}
 	}
 	return nil
 }

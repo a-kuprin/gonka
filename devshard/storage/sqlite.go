@@ -874,7 +874,15 @@ func (s *SQLite) InsertSealedInference(escrowID string, row InferenceRow) error 
 			escrow_id, inference_id, sealed_nonce,
 			obs_present, sealed_status, sealed_executor_slot,
 			sealed_votes_valid, sealed_votes_invalid, sealed_validated_by
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(escrow_id, inference_id) DO UPDATE SET
+			sealed_nonce = excluded.sealed_nonce,
+			obs_present = excluded.obs_present,
+			sealed_status = excluded.sealed_status,
+			sealed_executor_slot = excluded.sealed_executor_slot,
+			sealed_votes_valid = excluded.sealed_votes_valid,
+			sealed_votes_invalid = excluded.sealed_votes_invalid,
+			sealed_validated_by = excluded.sealed_validated_by`,
 		escrowID, row.InferenceID, row.SealedNonce,
 		obsPresent, row.SealedStatus, row.SealedExecutorSlot,
 		row.SealedVotesValid, row.SealedVotesInvalid, row.SealedValidatedBy,

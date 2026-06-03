@@ -53,6 +53,8 @@ type Storage interface {
 	LastFinalized(escrowID string) (uint64, error)
 	SaveSnapshot(escrowID string, nonce uint64, data []byte) error
 	LoadSnapshot(escrowID string) (nonce uint64, data []byte, err error)
+	// InsertSealedInference upserts the per-inference observability snapshot
+	// (insert or update on conflict).
 	InsertSealedInference(escrowID string, row InferenceRow) error
 	GetSealedInference(escrowID string, inferenceID uint64) (InferenceRow, bool, error)
 	DeleteSealedInferences(escrowID string) error
@@ -78,7 +80,7 @@ type SlotValidationObs struct {
 type CreateSessionParams struct {
 	EscrowID       string
 	EpochID        uint64
-	Version        string
+	Version        string // versiond runtime bind tag (HostManager boundVersion, VersionForRoutePrefix); not state-root protocol
 	CreatorAddr    string
 	Config         types.SessionConfig
 	Group          []types.SlotAssignment
@@ -89,7 +91,7 @@ type CreateSessionParams struct {
 type SessionMeta struct {
 	EscrowID       string
 	EpochID        uint64
-	Version        string
+	Version        string // versiond runtime bind tag; must match peer hosts' boundVersion
 	CreatorAddr    string
 	Config         types.SessionConfig
 	Group          []types.SlotAssignment

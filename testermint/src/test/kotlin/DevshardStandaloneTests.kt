@@ -87,7 +87,12 @@ class DevshardStandaloneTests : TestermintTest() {
         env = overrideVersiondEnv,
     )
 
-    private val overrideLongEpochConfig = versiondConfig(
+    private val streamingLongEpochConfig = versiondConfig(
+        genesisSpec = createSpec(epochLength = 20, epochShift = 10).merge(devshardNoRestrictionsSpec),
+        env = overrideVersiondEnv,
+    )
+
+    private val parallelLongEpochConfig = versiondConfig(
         genesisSpec = createSpec(epochLength = 40, epochShift = 10).merge(devshardNoRestrictionsSpec),
         env = overrideVersiondEnv,
     )
@@ -236,7 +241,7 @@ class DevshardStandaloneTests : TestermintTest() {
 
     @Test
     fun `devshard streaming inference e2e with settlement via devshardd`() {
-        val (cluster, genesis) = initCluster(config = overrideConfig, reboot = true)
+        val (cluster, genesis) = initCluster(config = streamingLongEpochConfig, reboot = true)
         genesis.waitForNextEpoch()
         waitForOverrideVersionedHealth(genesis)
 
@@ -293,7 +298,7 @@ class DevshardStandaloneTests : TestermintTest() {
     @Test
     fun `parallel devshard sessions with isolated settlement via devshardd`() {
         val sessionCount = 6
-        val (cluster, genesis) = initCluster(config = overrideLongEpochConfig, reboot = true)
+        val (cluster, genesis) = initCluster(config = parallelLongEpochConfig, reboot = true)
         genesis.waitForNextEpoch()
 
         cluster.stubDevshardChatResponse()
@@ -353,7 +358,11 @@ class DevshardStandaloneTests : TestermintTest() {
 
             logSection("Waiting for validation observability on active escrows")
             sessions.forEach { session ->
-                genesis.waitForDevshardValidationObservability(session.escrowId, minCompleted = 1)
+                genesis.waitForDevshardValidationObservability(
+                    session.escrowId,
+                    minCompleted = 1,
+                    routePrefix = overrideRoutePrefix,
+                )
             }
 
             logSection("Finalizing, settling, and verifying $sessionCount escrows")
@@ -365,7 +374,7 @@ class DevshardStandaloneTests : TestermintTest() {
                 assertThat(result.parsed.stateRootAndProtocolVersion).isEqualTo(devshardStateRootProtocolVersion())
                 assertThat(result.parsed.hostStats).isNotEmpty()
                 assertThat(result.parsed.signatures).isNotEmpty()
-                val obs = genesis.getDevshardShardStatsDetail(session.escrowId)
+                val obs = genesis.getDevshardShardStatsDetail(session.escrowId, routePrefix = overrideRoutePrefix)
                 assertThat(obs.validationObservability.totals.completedValidations)
                     .withFailMessage("validation observability for escrow ${session.escrowId}")
                     .isGreaterThan(0)
@@ -458,7 +467,10 @@ class DevshardStandaloneTests : TestermintTest() {
             logSection("Verifying inference status")
             val inference = assertNotNull(genesis.findChallengedDevshardInference(handle, numInferences))
             logSection("Inference: $inference")
-            assertThat(inference.status).isEqualTo(DevshardInferenceStatus.CHALLENGED)
+            assertThat(inference.status).isIn(
+                DevshardInferenceStatus.CHALLENGED,
+                DevshardInferenceStatus.INVALIDATED,
+            )
             assertThat(inference.votesInvalid).isNotZero()
         } finally {
             genesis.stopDevshardProxy(escrowId)

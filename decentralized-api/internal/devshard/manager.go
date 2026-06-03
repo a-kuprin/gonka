@@ -93,15 +93,16 @@ type statsShardSummary struct {
 }
 
 type statsShardDetailResponse struct {
-	EscrowID        string                    `json:"escrow_id"`
-	EpochID         uint64                    `json:"epoch_id"`
-	Nonce           uint64                    `json:"nonce"`
-	Version         string                    `json:"version"`
-	CachedAt        int64                     `json:"cached_at"`
-	CacheTTLSeconds int64                     `json:"cache_ttl_seconds"`
-	HostStats              map[uint32]statsHostStats      `json:"host_stats"`
-	ValidationObservability statsValidationObservability `json:"validation_observability"`
-	Group                  []types.SlotAssignment       `json:"group"`
+	EscrowID                    string                       `json:"escrow_id"`
+	EpochID                     uint64                       `json:"epoch_id"`
+	Nonce                       uint64                       `json:"nonce"`
+	Version                     string                       `json:"version"` // versiond runtime bind (m.boundVersion)
+	StateRootAndProtocolVersion string                       `json:"state_root_and_protocol_version"`
+	CachedAt                    int64                        `json:"cached_at"`
+	CacheTTLSeconds             int64                        `json:"cache_ttl_seconds"`
+	HostStats                   map[uint32]statsHostStats    `json:"host_stats"`
+	ValidationObservability     statsValidationObservability `json:"validation_observability"`
+	Group                       []types.SlotAssignment       `json:"group"`
 }
 
 type statsHostStats struct {
@@ -305,9 +306,8 @@ func (m *HostManager) create(escrowID string) (*transport.Server, error) {
 		config = types.NormalizeSessionConfig(config, len(group))
 	}
 
-	sm, err := state.NewStateMachine(escrowID, config, group, escrow.Amount, creatorAddr, m.verifier,
+	sm, err := state.NewStateMachine(escrowID, config, group, escrow.Amount, creatorAddr, m.verifier, m.store,
 		state.WithWarmKeyResolver(m.bridge.VerifyWarmKey),
-		state.WithInferenceStore(m.store),
 		state.WithVersion(types.EffectiveStateRootAndProtocolVersion()),
 	)
 	if err != nil {
@@ -440,9 +440,8 @@ func (m *HostManager) recoverStoredSession(escrowID string) (*transport.Server, 
 	}
 	sm, err := state.NewStateMachine(
 		escrowID, meta.Config, meta.Group, meta.InitialBalance,
-		meta.CreatorAddr, m.verifier,
+		meta.CreatorAddr, m.verifier, m.store,
 		state.WithWarmKeyResolver(m.bridge.VerifyWarmKey),
-		state.WithInferenceStore(m.store),
 		state.WithVersion(types.EffectiveStateRootAndProtocolVersion()),
 	)
 	if err != nil {
@@ -638,15 +637,16 @@ func (m *HostManager) statsShardDetail(escrowID string, now time.Time) (*statsSh
 	st := srv.Host().SnapshotState()
 
 	resp := &statsShardDetailResponse{
-		EscrowID:                escrowID,
-		EpochID:                 sess.EpochID,
-		Nonce:                   st.LatestNonce,
-		Version:                 st.StateRootAndProtocolVersion,
-		CachedAt:                now.Unix(),
-		CacheTTLSeconds:         int64(statsCacheTTL / time.Second),
-		HostStats:               statsHostStatsFromState(st.HostStats),
-		ValidationObservability: validationObservabilityFromStore(m.store, escrowID),
-		Group:                   append([]types.SlotAssignment(nil), st.Group...),
+		EscrowID:                    escrowID,
+		EpochID:                     sess.EpochID,
+		Nonce:                       st.LatestNonce,
+		Version:                     m.boundVersion,
+		StateRootAndProtocolVersion: st.StateRootAndProtocolVersion,
+		CachedAt:                    now.Unix(),
+		CacheTTLSeconds:             int64(statsCacheTTL / time.Second),
+		HostStats:                   statsHostStatsFromState(st.HostStats),
+		ValidationObservability:     validationObservabilityFromStore(m.store, escrowID),
+		Group:                       append([]types.SlotAssignment(nil), st.Group...),
 	}
 
 	m.statsMu.Lock()

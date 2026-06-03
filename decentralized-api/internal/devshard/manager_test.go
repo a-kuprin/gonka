@@ -299,8 +299,8 @@ func populateStore(t *testing.T, store storage.Storage, numDiffs int) ([]types.S
 		InitialBalance: 100000000,
 	}))
 
-	sm, err := state.NewStateMachine("escrow-1", config, group, 100000000, user.Address(), verifier,
-		state.WithStateRootAndProtocolVersion(runtimeTestVersion),
+	sm, err := state.NewStateMachine("escrow-1", config, group, 100000000, user.Address(), verifier, store,
+		state.WithStateRootAndProtocolVersion(types.EffectiveStateRootAndProtocolVersion()),
 	)
 	require.NoError(t, err)
 
@@ -341,8 +341,8 @@ func createStoredSession(t *testing.T, store storage.Storage, escrowID string, e
 		Version:        runtimeTestVersion,
 	}))
 
-	sm, err := state.NewStateMachine(escrowID, config, group, 100000000, user.Address(), verifier,
-		state.WithStateRootAndProtocolVersion(runtimeTestVersion),
+	sm, err := state.NewStateMachine(escrowID, config, group, 100000000, user.Address(), verifier, store,
+		state.WithStateRootAndProtocolVersion(types.EffectiveStateRootAndProtocolVersion()),
 	)
 	require.NoError(t, err)
 	for i := uint64(1); i <= uint64(numDiffs); i++ {
@@ -422,10 +422,11 @@ func TestStatsShardDetailReturnsStatsOnly(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "warm_keys")
 
 	var resp struct {
-		EscrowID  string `json:"escrow_id"`
-		EpochID   uint64 `json:"epoch_id"`
-		Nonce     uint64 `json:"nonce"`
-		Version   string `json:"version"`
+		EscrowID                    string `json:"escrow_id"`
+		EpochID                     uint64 `json:"epoch_id"`
+		Nonce                       uint64 `json:"nonce"`
+		Version                     string `json:"version"`
+		StateRootAndProtocolVersion string `json:"state_root_and_protocol_version"`
 		HostStats map[string]struct {
 			Missed               uint32 `json:"missed"`
 			Invalid              uint32 `json:"invalid"`
@@ -450,6 +451,7 @@ func TestStatsShardDetailReturnsStatsOnly(t *testing.T) {
 	require.Equal(t, uint64(7), resp.EpochID)
 	require.Equal(t, uint64(1), resp.Nonce)
 	require.Equal(t, runtimeTestVersion, resp.Version)
+	require.Equal(t, types.EffectiveStateRootAndProtocolVersion(), resp.StateRootAndProtocolVersion)
 	require.Len(t, resp.HostStats, len(group))
 	require.Equal(t, group, resp.Group)
 
@@ -584,8 +586,8 @@ func TestRecoverSessions_UsesSnapshotBeforeReplay(t *testing.T) {
 	verifier := signing.NewSecp256k1Verifier()
 	config := defaultConfig(3)
 
-	sm, err := state.NewStateMachine("escrow-1", config, group, 100000000, user.Address(), verifier,
-		state.WithStateRootAndProtocolVersion(runtimeTestVersion),
+	sm, err := state.NewStateMachine("escrow-1", config, group, 100000000, user.Address(), verifier, store,
+		state.WithStateRootAndProtocolVersion(types.EffectiveStateRootAndProtocolVersion()),
 	)
 	require.NoError(t, err)
 	records, err := store.GetDiffs("escrow-1", 1, host.SnapshotInterval)
@@ -1111,7 +1113,9 @@ func TestRecoverSessions_StateRootMismatch(t *testing.T) {
 		InitialBalance: 100000,
 	}))
 
-	sm, err := state.NewStateMachine("escrow-1", config, group, 100000, user.Address(), verifier)
+	sm, err := state.NewStateMachine("escrow-1", config, group, 100000, user.Address(), verifier, store,
+		state.WithStateRootAndProtocolVersion(types.EffectiveStateRootAndProtocolVersion()),
+	)
 	require.NoError(t, err)
 
 	// Diff 1: correct state hash.

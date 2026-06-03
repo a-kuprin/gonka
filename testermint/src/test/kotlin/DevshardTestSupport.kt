@@ -1,3 +1,7 @@
+import com.github.dockerjava.api.async.ResultCallback
+import com.github.dockerjava.api.model.Frame
+import com.github.dockerjava.core.DockerClientBuilder
+import com.github.kittinunf.fuel.Fuel
 import com.productscience.*
 import com.productscience.data.*
 import kotlin.test.assertNotNull
@@ -30,6 +34,79 @@ val devshardAlwaysValidateSpec = spec<AppState> {
                 this[BandwidthLimitsParams::minimumConcurrentInvalidations] = 100L
             }
         }
+    }
+}
+
+/** 100% devshard validation sampling (basis points). Distinct from legacy ValidationParams above. */
+val devshardEscrowAlwaysValidateSpec = spec<AppState> {
+    this[AppState::inference] = spec<InferenceState> {
+        this[InferenceState::params] = spec<InferenceParams> {
+            this[InferenceParams::devshardEscrowParams] = spec<DevshardEscrowParams> {
+                this[DevshardEscrowParams::validationRate] = 10_000L
+            }
+        }
+    }
+}
+
+fun LocalInferencePair.traceDevshardInferencePhase(
+    handle: LocalInferencePair.DevshardProxyHandle,
+    inferenceId: Long,
+    label: String,
+) {
+    runCatching {
+        val raw = getDevshardInferenceState(handle.proxyUrl, inferenceId)
+        logSection("phase-trace [$label] inference_id=$inferenceId proxy_state=$raw")
+    }.onFailure {
+        logSection("phase-trace [$label] inference_id=$inferenceId proxy_state=unavailable (${it.message})")
+    }
+}
+
+fun LocalInferencePair.dumpDevshardChallengeTraceLogs(escrowId: Long) {
+    val patterns = listOf(
+        "execute_ml_",
+        "validation_ml_",
+        "validation_enqueued",
+        "apply_validation",
+        "proxy_inference_",
+        "validation started",
+        "validation_result",
+        "validation_vote",
+    )
+    val grepExpr = patterns.joinToString("|") { Regex.escape(it) }
+    logSection("phase-trace docker logs (escrow=$escrowId, patterns=$grepExpr)")
+    runCatching {
+        val dockerClient = DockerClientBuilder.getInstance().build()
+        listOf("genesis", "join1", "join2").forEach { name ->
+            listOf("api", "proxy").forEach { svc ->
+                val containerName = "$name-$svc"
+                val collector = StringBuilder()
+                dockerClient.logContainerCmd(containerName)
+                    .withStdOut(true)
+                    .withStdErr(true)
+                    .withTail(800)
+                    .exec(
+                        object : ResultCallback.Adapter<Frame>() {
+                            override fun onNext(item: Frame) {
+                                collector.append(item.toString())
+                            }
+                        },
+                    )
+                    .awaitCompletion()
+                val filtered = collector.lines()
+                    .filter { line -> patterns.any { p -> line.contains(p) } }
+                    .joinToString("\n")
+                logSection("phase-trace $containerName (${filtered.lines().size} matching lines):\n$filtered")
+            }
+        }
+        val proxyLog = "/tmp/devshardctl-proxy-${escrowId}.log"
+        runCatching {
+            val lines = api.executor.exec(listOf("sh", "-c", "grep -E '$grepExpr' $proxyLog 2>/dev/null | tail -200 || true"), null)
+            logSection("phase-trace devshardctl ($proxyLog):\n${lines.joinToString("\n")}")
+        }.onFailure {
+            logSection("phase-trace devshardctl log unavailable: ${it.message}")
+        }
+    }.onFailure {
+        logSection("phase-trace docker dump failed: ${it.message}")
     }
 }
 
@@ -292,9 +369,22 @@ fun LocalInferencePair.assertDevshardSettlement(
     return result
 }
 
-fun LocalInferencePair.getDevshardShardStatsDetail(escrowId: Long): DevshardShardStatsDetail {
-    val url = "${api.getPublicUrl()}/v1/devshard/stats/shards/$escrowId"
-    val raw = api.executor.exec(listOf("sh", "-c", "curl -sf '$url'"), null).joinToString("")
+fun LocalInferencePair.getDevshardShardStatsDetail(
+    escrowId: Long,
+    routePrefix: String = "/v1/devshard",
+): DevshardShardStatsDetail {
+    val normalizedPrefix = routePrefix.trimEnd('/')
+    val path = "$normalizedPrefix/stats/shards/$escrowId"
+    val raw = if (normalizedPrefix.startsWith("/devshard/")) {
+        val url = "${api.getPublicUrl().trimEnd('/')}$path"
+        val (_, response, result) = Fuel.get(url).timeoutRead(10_000).responseString()
+        check(response.statusCode == 200) {
+            "GET $url returned ${response.statusCode}: $result"
+        }
+        result.get()
+    } else {
+        curlFromApiNetwork("${apiContainerPublicUrl()}$path")
+    }
     return cosmosJson.fromJson(raw, DevshardShardStatsDetail::class.java)
 }
 
@@ -303,21 +393,26 @@ fun LocalInferencePair.waitForDevshardValidationObservability(
     minCompleted: Int = 1,
     timeoutMs: Long = 120_000L,
     pollIntervalMs: Long = 2_000L,
+    routePrefix: String = "/v1/devshard",
 ) {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (System.currentTimeMillis() < deadline) {
-        val stats = getDevshardShardStatsDetail(escrowId)
+        val stats = getDevshardShardStatsDetail(escrowId, routePrefix)
         if (stats.validationObservability.totals.completedValidations >= minCompleted) {
             return
         }
         Thread.sleep(pollIntervalMs)
     }
-    val last = getDevshardShardStatsDetail(escrowId)
+    val last = getDevshardShardStatsDetail(escrowId, routePrefix)
     error(
         "timed out waiting for validation observability completed >= $minCompleted " +
             "(got ${last.validationObservability.totals.completedValidations})",
     )
 }
+
+/** True when validation challenged the inference and/or quorum invalidated it. */
+fun DevshardInferencePayload.hasChallengedOutcome(): Boolean =
+    status == DevshardInferenceStatus.CHALLENGED || status == DevshardInferenceStatus.INVALIDATED
 
 fun LocalInferencePair.findChallengedDevshardInference(
     handle: LocalInferencePair.DevshardProxyHandle,
@@ -332,6 +427,6 @@ fun LocalInferencePair.findChallengedDevshardInference(
                 getDevshardInferenceState(handle.proxyUrl, inferenceId),
                 DevshardInferencePayload::class.java,
             )
-        }.getOrNull()?.takeIf { it.status == DevshardInferenceStatus.CHALLENGED }
+        }.getOrNull()?.takeIf { it.hasChallengedOutcome() }
     }
 }

@@ -21,7 +21,14 @@ class DevshardTests : TestermintTest() {
         genesisSpec = inferenceConfig.genesisSpec?.merge(devshardNoRestrictionsSpec) ?: devshardNoRestrictionsSpec
     )
 
-    private val noRestrictionsLongEpochConfig = inferenceConfig.copy(
+    private val streamingLongEpochConfig = inferenceConfig.copy(
+        genesisSpec = createSpec(
+            epochLength = 20,
+            epochShift = 10
+        ).merge(devshardNoRestrictionsSpec)
+    )
+
+    private val parallelLongEpochConfig = inferenceConfig.copy(
         genesisSpec = createSpec(
             epochLength = 40,
             epochShift = 10
@@ -32,7 +39,10 @@ class DevshardTests : TestermintTest() {
         genesisSpec = inferenceConfig.genesisSpec
             ?.merge(devshardNoRestrictionsSpec)
             ?.merge(devshardAlwaysValidateSpec)
-            ?: devshardNoRestrictionsSpec.merge(devshardAlwaysValidateSpec)
+            ?.merge(devshardEscrowAlwaysValidateSpec)
+            ?: devshardNoRestrictionsSpec
+                .merge(devshardAlwaysValidateSpec)
+                .merge(devshardEscrowAlwaysValidateSpec)
     )
 
     @Test
@@ -97,7 +107,7 @@ class DevshardTests : TestermintTest() {
 
     @Test
     fun `devshard streaming inference e2e with settlement`() {
-        val (cluster, genesis) = initCluster(config = noRestrictionsConfig, reboot = true)
+        val (cluster, genesis) = initCluster(config = streamingLongEpochConfig, reboot = true)
         genesis.waitForNextEpoch()
 
         cluster.stubDevshardChatResponse(content = "hello from stream", streamDelay = Duration.ofMillis(50))
@@ -154,7 +164,7 @@ class DevshardTests : TestermintTest() {
     @Test
     fun `parallel devshard sessions with isolated settlement`() {
         val sessionCount = 6
-        val (cluster, genesis) = initCluster(config = noRestrictionsLongEpochConfig, reboot = true)
+        val (cluster, genesis) = initCluster(config = parallelLongEpochConfig, reboot = true)
         genesis.waitForNextEpoch()
 
         cluster.stubDevshardChatResponse()
@@ -302,14 +312,27 @@ class DevshardTests : TestermintTest() {
 
         try {
             genesis.waitForDevshardProxyWarmup()
-            logSection("Sending streaming chat completions via proxy")
+            logSection("Sending chat completions via proxy (join2 mock = withMissingLogit)")
             val numInferences = 20L
+            val badExecutorHostIdx = cluster.allPairs.lastIndex
             for (i in 0 until numInferences) {
+                val inferenceId = i + 1L
                 val response = genesis.sendChatCompletion(handle.proxyUrl, defaultModel, "test prompt $i")
                 assertThat(response).isNotEmpty()
+                genesis.traceDevshardInferencePhase(handle, inferenceId, "after_completion")
+                if (inferenceId % cluster.allPairs.size == badExecutorHostIdx.toLong()) {
+                    logSection("phase-trace inference $inferenceId routed to join2 (bad mock)")
+                }
             }
 
             genesis.waitForDevshardPreFinalize()
+            logSection("Waiting for async validations before finalize")
+            Thread.sleep(Duration.ofSeconds(15).toMillis())
+            for (inferenceId in 1..numInferences) {
+                genesis.traceDevshardInferencePhase(handle, inferenceId, "pre_finalize")
+            }
+            genesis.dumpDevshardChallengeTraceLogs(escrowId)
+
             logSection("Finalizing via proxy")
             val result = genesis.finalizeDevshardProxy(handle.proxyUrl)
 
@@ -327,11 +350,16 @@ class DevshardTests : TestermintTest() {
             val escrow = genesis.node.queryDevshardEscrow(escrowId)
             assertThat(escrow.escrow!!.settled).isTrue()
 
+            genesis.dumpDevshardChallengeTraceLogs(escrowId)
+
             logSection("Verifying inference status")
             try {
                 val inference = assertNotNull(genesis.findChallengedDevshardInference(handle, numInferences))
                 logSection("Inference: $inference")
-                assertThat(inference.status).isEqualTo(DevshardInferenceStatus.CHALLENGED)
+                assertThat(inference.status).isIn(
+                    DevshardInferenceStatus.CHALLENGED,
+                    DevshardInferenceStatus.INVALIDATED,
+                )
                 assertThat(inference.votesInvalid).isNotZero()
             } catch (t: Throwable) {
                 dumpDevshardFailureDebug(

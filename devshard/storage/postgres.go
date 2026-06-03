@@ -37,11 +37,11 @@ type Postgres struct {
 }
 
 const (
-	pgSessionsParent   = "devshard_sessions"
-	pgDiffsParent      = "devshard_diffs"
-	pgSignaturesParent = "devshard_signatures"
-	pgSnapshotsParent  = "devshard_snapshots"
-	pgInferencesParent    = "devshard_sealed_inferences"
+	pgSessionsParent               = "devshard_sessions"
+	pgDiffsParent                  = "devshard_diffs"
+	pgSignaturesParent             = "devshard_signatures"
+	pgSnapshotsParent              = "devshard_snapshots"
+	pgInferencesParent             = "devshard_sealed_inferences"
 	pgValidationObsParent          = "devshard_slot_validation_obs"
 	pgInferenceValidationObsParent = "devshard_inference_validation_obs"
 	pgSealedValidationObsParent    = "devshard_sealed_validation_obs"
@@ -697,7 +697,15 @@ func (s *Postgres) InsertSealedInference(escrowID string, row InferenceRow) erro
 			epoch_id, escrow_id, inference_id, sealed_nonce,
 			obs_present, sealed_status, sealed_executor_slot,
 			sealed_votes_valid, sealed_votes_invalid, sealed_validated_by
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (epoch_id, escrow_id, inference_id) DO UPDATE SET
+			sealed_nonce = EXCLUDED.sealed_nonce,
+			obs_present = EXCLUDED.obs_present,
+			sealed_status = EXCLUDED.sealed_status,
+			sealed_executor_slot = EXCLUDED.sealed_executor_slot,
+			sealed_votes_valid = EXCLUDED.sealed_votes_valid,
+			sealed_votes_invalid = EXCLUDED.sealed_votes_invalid,
+			sealed_validated_by = EXCLUDED.sealed_validated_by`,
 		epochID, escrowID, row.InferenceID, row.SealedNonce, row.ObsPresent,
 		row.SealedStatus, row.SealedExecutorSlot,
 		row.SealedVotesValid, row.SealedVotesInvalid, row.SealedValidatedBy,
@@ -801,7 +809,7 @@ func (s *Postgres) DrainInferenceValidationObs(escrowID string, inferenceID uint
 		return fmt.Errorf("drain inference validation obs select: %w", err)
 	}
 	type row struct {
-		slotID               uint32
+		slotID              uint32
 		required, completed uint32
 	}
 	var live []row
@@ -858,7 +866,7 @@ func (s *Postgres) GetValidationObservability(escrowID string) ([]SlotValidation
 		   ) AS combined
 		  GROUP BY slot_id
 		  ORDER BY slot_id`,
-		epochID, escrowID, epochID, escrowID,
+		epochID, escrowID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get validation observability: %w", err)

@@ -286,9 +286,6 @@ func (m *Memory) InsertSealedInference(escrowID string, row InferenceRow) error 
 	if !ok {
 		return fmt.Errorf("session %s not found", escrowID)
 	}
-	if _, exists := s.inferences[row.InferenceID]; exists {
-		return fmt.Errorf("sealed inference %d already exists for session %s", row.InferenceID, escrowID)
-	}
 	s.inferences[row.InferenceID] = row
 	return nil
 }

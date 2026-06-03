@@ -17,7 +17,8 @@ const DevshardStateRootAndProtocolVersion = "v2"
 // DefaultStateRootVersion is the tag used when no explicit bind version is provided.
 const DefaultStateRootVersion = DevshardStateRootAndProtocolVersion
 
-// NormalizeVersion returns the session bind / state-root tag, defaulting when empty.
+// NormalizeVersion returns the state-root / settlement protocol tag, defaulting when empty.
+// It is not used for storage session bind (CreateSessionParams.Version); see LegacyRouteSessionVersion.
 func NormalizeVersion(version string) string {
 	if strings.TrimSpace(version) == "" {
 		return DefaultStateRootVersion

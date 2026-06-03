@@ -292,6 +292,9 @@ data class LocalInferencePair(
         DockerExecutor(siblingContainerId("versiond"), config).exec(args, stdin)
     }
 
+    /** Public dAPI base URL reachable from inside the api container (not the host-mapped proxy). */
+    fun apiContainerPublicUrl(): String = "http://localhost:9000"
+
     fun curlFromApiNetwork(url: String): String = wrapLog("curlFromApiNetwork", false) {
         api.executor.exec(listOf("sh", "-c", "curl -sf '$url'"), null).joinToString("").trim()
     }

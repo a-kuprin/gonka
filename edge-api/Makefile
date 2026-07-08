@@ -17,8 +17,8 @@ define DOCKER_BUILD
 	@echo "    	platform: $(PLATFORM)"
 	@DOCKER_BUILDKIT=1 docker build \
 		--platform $(PLATFORM) \
-		-f edge-api/Dockerfile \
-		. \
+		-f Dockerfile \
+		.. \
 		-t $(DOCKER_TAG)
 endef
 
@@ -30,7 +30,8 @@ build-docker:
 	$(DOCKER_BUILD)
 	@if [ "$(SET_LATEST)" = "1" ]; then \
 		echo "Setting latest tag..."; \
-		docker tag $(DOCKER_TAG) ghcr.io/product-science/edge-api:latest edge-api:latest; \
+		docker tag $(DOCKER_TAG) ghcr.io/product-science/edge-api:latest; \
+		docker tag $(DOCKER_TAG) edge-api:latest; \
 	fi
 
 generate: generate-api

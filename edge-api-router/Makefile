@@ -13,5 +13,6 @@ build-docker:
 		-t ghcr.io/product-science/edge-api-router:$(VERSION)
 	@if [ "$(SET_LATEST)" = "1" ]; then \
 		echo "Setting latest tag..."; \
-		docker tag ghcr.io/product-science/edge-api-router:$(VERSION) ghcr.io/product-science/edge-api-router:latest edge-api-router:latest; \
+		docker tag ghcr.io/product-science/edge-api-router:$(VERSION) ghcr.io/product-science/edge-api-router:latest; \
+		docker tag ghcr.io/product-science/edge-api-router:$(VERSION) edge-api-router:latest; \
 	fi

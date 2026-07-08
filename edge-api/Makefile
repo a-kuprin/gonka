@@ -15,8 +15,14 @@ endif
 define DOCKER_BUILD
 	@echo "--> building edge-api docker image"
 	@echo "    	platform: $(PLATFORM)"
+	@echo "    	GOOS: $(GOOS)"
+	@echo "    	GOARCH: $(GOARCH)"
+	@echo "    	BLST_PORTABLE: $(BLST_PORTABLE)"
 	@DOCKER_BUILDKIT=1 docker build \
 		--platform $(PLATFORM) \
+		--build-arg GOOS=$(GOOS) \
+		--build-arg GOARCH=$(GOARCH) \
+		--build-arg BLST_PORTABLE=$(BLST_PORTABLE) \
 		-f Dockerfile \
 		.. \
 		-t $(DOCKER_TAG)
@@ -26,6 +32,8 @@ all: build-docker
 
 build-docker:
 	$(eval PLATFORM=$(DOCKER_PLATFORM))
+	$(eval GOOS=$(DOCKER_GOOS))
+	$(eval GOARCH=$(DOCKER_GOARCH))
 	$(eval DOCKER_TAG=ghcr.io/product-science/edge-api:$(VERSION))
 	$(DOCKER_BUILD)
 	@if [ "$(SET_LATEST)" = "1" ]; then \

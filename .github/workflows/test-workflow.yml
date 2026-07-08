@@ -163,7 +163,7 @@ jobs:
       - name: Make Docker Images
         env:
           GENESIS_OVERRIDES_FILE: "inference-chain/test_genesis_overrides.json"
-          USE_REGISTRY_CACHE: "1"
+          USE_REGISTRY_CACHE: "0"
         run: |
           make build-docker
           # devshardd checks DEVSHARD_BINARY_LOG_VERSION == link-time protocol name (dev via build/devshard-version).

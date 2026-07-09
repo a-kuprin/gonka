@@ -183,6 +183,8 @@ jobs:
           docker save -o docker-images/proxy.tar ghcr.io/product-science/proxy:latest
           docker save -o docker-images/versiond.tar versiond:latest
           docker save -o docker-images/testapp-server.tar testapp-server:latest
+          docker save -o docker-images/edge-api.tar edge-api:latest
+          docker save -o docker-images/edge-api-router.tar edge-api-router:latest
           gzip docker-images/*.tar
           echo "=== Created files ==="
           ls -la docker-images/
@@ -261,6 +263,8 @@ jobs:
           sudo docker load -i docker-images/proxy.tar || true
           sudo docker load -i docker-images/versiond.tar || true
           sudo docker load -i docker-images/testapp-server.tar || true
+          sudo docker load -i docker-images/edge-api.tar || true
+          sudo docker load -i docker-images/edge-api-router.tar || true
           rm -rf docker-images/
 
       - name: Prepare devshardd Host Binary

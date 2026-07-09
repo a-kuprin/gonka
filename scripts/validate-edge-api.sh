@@ -12,13 +12,13 @@ echo "==> common observability + chain (edge-api transport deps)"
 (cd "${REPO_ROOT}/common" && go test ./observability/... ./chain/... -count=1)
 
 echo "==> docker compose render (local-test-net base + genesis)"
-KEY_NAME=genesis docker compose --project-directory "${REPO_ROOT}" \
+KEY_NAME=genesis EDGE_API_BUILD_CONTEXT=. docker compose --project-directory "${REPO_ROOT}" \
   -f local-test-net/docker-compose-base.yml \
   -f local-test-net/docker-compose.genesis.yml \
   config --quiet
 
 echo "==> docker compose render (local-test-net multi edge-api + router)"
-KEY_NAME=genesis docker compose --project-directory "${REPO_ROOT}" \
+KEY_NAME=genesis EDGE_API_BUILD_CONTEXT=. docker compose --project-directory "${REPO_ROOT}" \
   -f local-test-net/docker-compose-base.yml \
   -f local-test-net/docker-compose.genesis.yml \
   -f local-test-net/docker-compose.edge-api.yml \

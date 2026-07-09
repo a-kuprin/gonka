@@ -979,7 +979,7 @@ data class LocalInferencePair(
                     " DEVSHARD_ESCROW_ID=$escrowId" +
                     " DEVSHARD_MODEL='$model'" +
                     " DEVSHARD_ADMIN_API_KEY='$devshardAdminApiKey'" +
-                    " DEVSHARD_CHAIN_REST=http://\$NODE_HOST:1317" +
+                    " DEVSHARD_CHAIN_GRPC=\$NODE_HOST:9090" +
                     " DEVSHARD_PORT=$port" +
                     // Lift gateway rate limits for tests. The dynamic cap is
                     // floor(weight * per10000 / 10000); tiny test PoC weight rounds it to 0.

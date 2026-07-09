@@ -72,7 +72,7 @@ services:
     image: edge-api:latest
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
-      context: .
+      context: ${EDGE_API_BUILD_CONTEXT:-..}
       dockerfile: edge-api/Dockerfile
     environment:
       - EDGE_API_PORT=18080

@@ -198,6 +198,8 @@ echo "Starting cosmovisor and the chain"
 #  tail -f /dev/null
 #}
 
+sed -Ei 's/^address = ".*:9090"$/address = "0.0.0.0:9090"/g' "$STATE_DIR/config/app.toml"
+
 cosmovisor run start &
 COSMOVISOR_PID=$!
 sleep 20 # wait for the first block

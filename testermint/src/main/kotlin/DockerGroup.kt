@@ -468,6 +468,7 @@ data class DockerGroup(
             put("SNAPSHOT_KEEP_RECENT", "5")
             put("REST_API_ACTIVE", "true")
             put("P2P_EXTERNAL_ADDRESS", p2pExternalAddress)
+            put("EDGE_API_BUILD_CONTEXT", ".")
 
             genesisGroup?.let {
                 if (useSnapshots) {

@@ -49,7 +49,7 @@ RUN --mount=type=cache,id=edge-api-go-build,target=/root/.cache/go-build \
     -o ./build/edge-api ./cmd/edge-api
 
 FROM alpine:3.23 AS runtime
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates libgcc
 COPY --from=builder /app/edge-api/build/edge-api /usr/local/bin/edge-api
 EXPOSE 18080
 ENTRYPOINT ["edge-api"]

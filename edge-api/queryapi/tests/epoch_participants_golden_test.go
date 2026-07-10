@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/cosmos/cosmos-sdk/client/grpc/cmtservice"
+	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
+	cosmosed25519 "github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,6 +40,36 @@ func TestEpochParticipantsJSONMatchesDapiGolden(t *testing.T) {
 	assert.NotNil(t, got["proof_ops"])
 	assert.Contains(t, got, "validators")
 	assert.Contains(t, got, "excluded_participants")
+}
+
+func TestEpochParticipantsJSONEncodesValidatorsWithPubKeyAny(t *testing.T) {
+	srv := &stubEpochParticipantsComet{withValidators: true}
+	h := handlersWithInferenceAndComet(t, &stubEpochParticipantsInference{}, srv)
+
+	ctx, rec := echoContext(t, http.MethodGet, "/v1/epochs/1/participants")
+	require.NoError(t, h.GetEpochParticipants(ctx, "1"))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+
+	validators, ok := got["validators"].([]any)
+	require.True(t, ok, "validators should be a JSON array, body=%s", rec.Body.String())
+	require.Len(t, validators, 1)
+
+	val, ok := validators[0].(map[string]any)
+	require.True(t, ok)
+
+	pubKey, ok := val["pub_key"].(string)
+	require.True(t, ok, "pub_key must be a base64 string for testermint compatibility, got %T: %v", val["pub_key"], val["pub_key"])
+	require.NotEmpty(t, pubKey)
+	require.NotContains(t, pubKey, "@type")
+
+	address, ok := val["address"].(string)
+	require.True(t, ok)
+	require.Regexp(t, `^[0-9A-F]+$`, address, "validator address must be hex-uppercase")
+
+	require.Equal(t, "100", val["voting_power"])
 }
 
 func loadEpochParticipantsGolden(t *testing.T) map[string]any {
@@ -71,7 +103,8 @@ func (s *stubEpochParticipantsInference) ExcludedParticipants(_ context.Context,
 
 type stubEpochParticipantsComet struct {
 	cmtservice.UnimplementedServiceServer
-	value []byte
+	value          []byte
+	withValidators bool
 }
 
 func (s *stubEpochParticipantsComet) ABCIQuery(_ context.Context, req *cmtservice.ABCIQueryRequest) (*cmtservice.ABCIQueryResponse, error) {
@@ -113,5 +146,19 @@ func (s *stubEpochParticipantsComet) GetBlockByHeight(_ context.Context, req *cm
 }
 
 func (s *stubEpochParticipantsComet) GetValidatorSetByHeight(_ context.Context, _ *cmtservice.GetValidatorSetByHeightRequest) (*cmtservice.GetValidatorSetByHeightResponse, error) {
-	return &cmtservice.GetValidatorSetByHeightResponse{Validators: nil}, nil
+	if !s.withValidators {
+		return &cmtservice.GetValidatorSetByHeightResponse{Validators: nil}, nil
+	}
+	pk := cosmosed25519.PubKey{Key: []byte("01234567890123456789012345678901")}
+	anyPK, err := codectypes.NewAnyWithValue(&pk)
+	if err != nil {
+		return nil, err
+	}
+	return &cmtservice.GetValidatorSetByHeightResponse{
+		Validators: []*cmtservice.Validator{{
+			Address:     "gonkavalcons1stubvalidator",
+			PubKey:      anyPK,
+			VotingPower: 100,
+		}},
+	}, nil
 }

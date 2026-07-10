@@ -36,6 +36,16 @@ func (h *Handlers) GetEpoch(ctx echo.Context, epoch string) error {
 
 	epochContext := inferencetypes.NewEpochContext(epochInfo.LatestEpoch, *epochInfo.Params.EpochParams)
 	nextEpochContext := epochContext.NextEpochContext()
+	epochParams, err := protoToRawJSON(&epochInfo.Params)
+	if err != nil {
+		logging.Error("Failed to encode epoch params", inferencetypes.Server, "error", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to encode epoch params")
+	}
+	activeConfirmationPoc, err := protoToRawJSON(epochInfo.ActiveConfirmationPocEvent)
+	if err != nil {
+		logging.Error("Failed to encode confirmation PoC event", inferencetypes.Server, "error", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to encode confirmation PoC event")
+	}
 	return ctx.JSON(http.StatusOK, gen.EpochResponse{
 		BlockHeight: gen.Int64(epochInfo.BlockHeight),
 		LatestEpoch: gen.LatestEpoch{
@@ -45,9 +55,9 @@ func (h *Handlers) GetEpoch(ctx echo.Context, epoch string) error {
 		Phase:                      string(epochContext.GetCurrentPhase(epochInfo.BlockHeight)),
 		EpochStages:                epochContext.GetEpochStages(),
 		NextEpochStages:            nextEpochContext.GetEpochStages(),
-		EpochParams:                epochInfo.Params,
+		EpochParams:                epochParams,
 		IsConfirmationPocActive:    epochInfo.IsConfirmationPocActive,
-		ActiveConfirmationPocEvent: epochInfo.ActiveConfirmationPocEvent,
+		ActiveConfirmationPocEvent: activeConfirmationPoc,
 	})
 }
 
@@ -198,28 +208,40 @@ func (h *Handlers) getEpochParticipants(ctx context.Context, epoch uint64) (*gen
 		addresses[i] = addr
 	}
 
-	validators := make([]gen.RawProtoJson, len(valsResp.Validators))
-	for i, v := range valsResp.Validators {
-		validators[i] = v
+	activeParticipantsJSON, err := protoToRawJSON(&activeParticipants)
+	if err != nil {
+		logging.Error("Failed to encode active participants", inferencetypes.Participants, "error", err)
+		return nil, err
 	}
 
-	var block gen.RawProtoJson
+	validators, err := validatorsToRawJSON(valsResp.Validators)
+	if err != nil {
+		logging.Error("Failed to encode validators", inferencetypes.Participants, "error", err)
+		return nil, err
+	}
+
+	var block *gen.RawProtoJson
 	if blockP1Resp != nil {
-		block = blockP1Resp.SdkBlock
+		block, err = protoToRawJSONPtr(blockP1Resp.SdkBlock)
+		if err != nil {
+			logging.Error("Failed to encode block", inferencetypes.Participants, "error", err)
+			return nil, err
+		}
 	}
 
-	var proofOps gen.RawProtoJson
-	if result.ProofOps != nil {
-		proofOps = result.ProofOps
+	proofOps, err := protoToRawJSONPtr(result.ProofOps)
+	if err != nil {
+		logging.Error("Failed to encode proof ops", inferencetypes.Participants, "error", err)
+		return nil, err
 	}
 
 	return &gen.ActiveParticipantWithProof{
-		ActiveParticipants:      activeParticipants,
+		ActiveParticipants:      activeParticipantsJSON,
 		Addresses:               addresses,
 		ActiveParticipantsBytes: hex.EncodeToString(result.Value),
-		ProofOps:                &proofOps,
+		ProofOps:                proofOps,
 		Validators:              validators,
-		Block:                   &block,
+		Block:                   block,
 		ExcludedParticipants:    h.getExcludedParticipants(ctx, epoch),
 	}, nil
 }

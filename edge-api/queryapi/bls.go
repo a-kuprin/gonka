@@ -77,8 +77,13 @@ func (h *Handlers) GetBLSEpoch(ctx echo.Context, id uint64) error {
 		uncompressedValSig, _ = decompressG1To128(res.EpochData.ValidationSignature)
 	}
 
+	epochData, err := protoToRawJSON(&res.EpochData)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to encode BLS epoch data: "+err.Error())
+	}
+
 	return ctx.JSON(http.StatusOK, gen.BLSEpochResponse{
-		EpochData:                          res.EpochData,
+		EpochData:                          epochData,
 		GroupPublicKeyUncompressed256:      uncompressedG2,
 		ValidationSignatureUncompressed128: uncompressedValSig,
 	})
@@ -120,9 +125,12 @@ func (h *Handlers) GetBLSSignature(ctx echo.Context, requestId string) error {
 		}
 	}
 
-	var sigReq gen.RawProtoJson = res.SigningRequest
+	sigReq, err := protoToRawJSONPtr(&res.SigningRequest)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to encode BLS signing request: "+err.Error())
+	}
 	return ctx.JSON(http.StatusOK, gen.BLSSignatureResponse{
-		SigningRequest:           &sigReq,
+		SigningRequest:           sigReq,
 		UncompressedSignature128: uncompressedSig,
 	})
 }

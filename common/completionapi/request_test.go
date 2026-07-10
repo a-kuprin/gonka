@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"common/utils"
+
 	"github.com/productscience/inference/x/inference/calculations"
 	"github.com/stretchr/testify/require"
 )
@@ -389,4 +391,25 @@ func TestModifyRequestBodyWithLogprobsMode_PromptHashConsistency(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, r1.NewBody, r2.NewBody, "identical inputs must produce identical outputs for hash consistency")
+}
+
+func TestModifyRequestBodyWithLogprobsMode_SetsReturnTokenIDs(t *testing.T) {
+	r, err := ModifyRequestBodyWithLogprobsMode([]byte(jsonBody), 7, "processed_logprobs")
+	require.NoError(t, err)
+
+	var m map[string]interface{}
+	require.NoError(t, json.Unmarshal(r.NewBody, &m))
+	require.Equal(t, true, m["return_token_ids"])
+}
+
+func TestModifyRequestBodyWithLogprobsMode_TestermintInferenceRequestPromptHash(t *testing.T) {
+	// Matches testermint inferenceRequest JSON (cosmosJson serialization).
+	body := []byte(`{"model":"Qwen/Qwen2.5-7B-Instruct","temperature":"0.8","messages":[{"role":"system","content":"Regardless of the language of the question, answer in english"},{"role":"user","content":"When did Hawaii become a state"}],"seed":-25,"stream":false}`)
+
+	r, err := ModifyRequestBodyWithLogprobsMode(body, 0, "processed_logprobs")
+	require.NoError(t, err)
+
+	canonical, err := utils.CanonicalizeJSON(r.NewBody)
+	require.NoError(t, err)
+	require.Equal(t, "a5d657a116456a31026dea733abf558bf97d6ea1051e32d2a95ee9e67e2464f6", utils.GenerateSHA256Hash(canonical))
 }

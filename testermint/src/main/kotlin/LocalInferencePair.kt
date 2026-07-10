@@ -13,6 +13,8 @@ import org.tinylog.kotlin.Logger
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
@@ -242,6 +244,9 @@ fun devshardProxyLogPath(escrowId: Long): String = "/tmp/devshardctl-proxy-$escr
 
 private val devshardctlLogFollowers = ConcurrentHashMap<Long, DevshardctlLogFollower>()
 
+/** Api container IDs that already have host-built `build/devshardctl` installed. */
+private val containersWithDevshardctl = ConcurrentHashMap.newKeySet<String>()
+
 /**
  * Tails devshardctl stdout/stderr from the api container into tinylog with source=devshardctl,
  * so per-test log files include user-side auto-seal diagnostics alongside dapi host logs.
@@ -298,6 +303,57 @@ private fun LocalInferencePair.apiContainerId(): String {
     val exec = api.executor
     require(exec is DockerExecutor) { "devshardctl log tail requires DockerExecutor-backed api" }
     return exec.containerId
+}
+
+/**
+ * Testermint runs `devshardctl` inside the api container (dynamic per-escrow processes).
+ * Production ships a separate gateway image; the api image no longer embeds the binary.
+ * Install the host-built Linux binary from `build/devshardctl` when missing.
+ */
+private fun LocalInferencePair.ensureDevshardctlInstalled() {
+    val containerId = apiContainerId()
+    if (containersWithDevshardctl.contains(containerId)) {
+        return
+    }
+    synchronized(containersWithDevshardctl) {
+        if (containersWithDevshardctl.contains(containerId)) {
+            return
+        }
+        val alreadyPresent = try {
+            api.executor.exec(
+                listOf("sh", "-c", "command -v devshardctl >/dev/null 2>&1 && echo OK"),
+                null,
+            ).any { it.trim() == "OK" }
+        } catch (_: Exception) {
+            false
+        }
+        if (alreadyPresent) {
+            containersWithDevshardctl.add(containerId)
+            return
+        }
+
+        val hostBinary = Path.of(getRepoRoot(), "build", "devshardctl")
+        check(Files.isRegularFile(hostBinary)) {
+            "devshardctl is not in the api container and missing at $hostBinary. " +
+                "Run: make devshardctl-build (produces a Linux binary for docker exec)"
+        }
+
+        val cp = ProcessBuilder(
+            "docker",
+            "cp",
+            hostBinary.toAbsolutePath().toString(),
+            "$containerId:/usr/local/bin/devshardctl",
+        )
+            .redirectErrorStream(true)
+            .start()
+        val cpOut = cp.inputStream.bufferedReader().use { it.readText() }
+        check(cp.waitFor() == 0) {
+            "docker cp build/devshardctl into $containerId failed: $cpOut"
+        }
+        api.executor.exec(listOf("chmod", "+x", "/usr/local/bin/devshardctl"), null)
+        containersWithDevshardctl.add(containerId)
+        Logger.info("Installed host build/devshardctl into api container {}", containerId)
+    }
 }
 
 private fun LocalInferencePair.attachDevshardctlLogs(escrowId: Long) {
@@ -966,6 +1022,7 @@ data class LocalInferencePair(
         model: String = defaultModel,
     ): DevshardProxyHandle =
         wrapLog("startDevshardProxy", true) {
+            ensureDevshardctlInstalled()
             val privateKey = (if (keyName != null) node.getPrivateKey(keyName) else node.getColdPrivateKey()).trim()
             val stderrFile = devshardProxyLogPath(escrowId)
             // Tests pin the route prefix explicitly so they are not coupled to

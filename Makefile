@@ -137,9 +137,13 @@ api-local-build:
 DEVSHARD_VERSION_LDFLAGS = -X main.Version=$(DEVSHARD_VERSION) -X devshard/types.buildStateRootProtocolVersion=$(DEVSHARD_VERSION)
 DEVSHARDD_LDFLAGS = $(DEVSHARD_VERSION_LDFLAGS) -X main.BinaryVersion=$(DEVSHARD_BINARY_VERSION)
 
+# Linux binary for Testermint: docker-cp'd into *-api containers (not baked into the api image).
 devshardctl-build:
-	@echo "Building devshardctl (DEVSHARD_VERSION=$(DEVSHARD_VERSION))..."
-	@cd devshard && go build -ldflags "$(DEVSHARD_VERSION_LDFLAGS)" -o ../build/devshardctl ./cmd/devshardctl/
+	@echo "Building devshardctl for $(DOCKER_GOOS)/$(DOCKER_GOARCH) (DEVSHARD_VERSION=$(DEVSHARD_VERSION))..."
+	@mkdir -p build
+	@cd devshard && CGO_ENABLED=0 GOOS=$(DOCKER_GOOS) GOARCH=$(DOCKER_GOARCH) \
+		go build -ldflags "$(DEVSHARD_VERSION_LDFLAGS)" -o ../build/devshardctl ./cmd/devshardctl/
+	@chmod +x build/devshardctl
 
 devshardd-build:
 	@echo "Building devshardd (DEVSHARD_VERSION=$(DEVSHARD_VERSION) DEVSHARD_BINARY_VERSION=$(DEVSHARD_BINARY_VERSION))..."

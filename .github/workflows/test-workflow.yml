@@ -166,11 +166,14 @@ jobs:
           USE_REGISTRY_CACHE: "0"
         run: |
           make build-docker
-          # devshardd checks DEVSHARD_BINARY_LOG_VERSION == link-time protocol name (dev via build/devshard-version).
-          DEVSHARD_VERSION=dev make devshardd-build
+          # Host Linux binaries for Testermint:
+          # - build/devshardd: mounted into versiond (VERSIOND_OVERRIDE)
+          # - build/devshardctl: docker-cp'd into *-api for startDevshardProxy
+          DEVSHARD_VERSION=dev make devshardd-build devshardctl-build
           echo "=== devshard version (DEVSHARD_VERSION / build/devshard-version) ==="
           make -s print-devshard-version
           cat build/devshard-version
+          ls -la build/devshardd build/devshardctl
           echo "=== Images immediately after build ==="
           docker images | head -20
 
@@ -196,12 +199,13 @@ jobs:
           path: docker-images/
           retention-days: 1
 
-      - name: Upload devshardd Host Binary
+      - name: Upload Devshard Host Binaries
         uses: actions/upload-artifact@v4
         with:
-          name: devshardd-host-binary
+          name: devshard-host-binaries
           path: |
             build/devshardd
+            build/devshardctl
             build/devshard-version
           retention-days: 1
 
@@ -248,10 +252,10 @@ jobs:
           name: docker-images
           path: docker-images/
 
-      - name: Download devshardd Host Binary
+      - name: Download Devshard Host Binaries
         uses: actions/download-artifact@v4
         with:
-          name: devshardd-host-binary
+          name: devshard-host-binaries
           path: build/
 
       - name: Load Docker Images
@@ -267,11 +271,13 @@ jobs:
           sudo docker load -i docker-images/edge-api-router.tar || true
           rm -rf docker-images/
 
-      - name: Prepare devshardd Host Binary
+      - name: Prepare Devshard Host Binaries
         run: |
-          chmod +x build/devshardd
+          chmod +x build/devshardd build/devshardctl
           echo "=== devshard version stamp (for Testermint) ==="
           cat build/devshard-version 2>/dev/null || echo "(missing build/devshard-version)"
+          ls -la build/devshardd build/devshardctl
+          file build/devshardd build/devshardctl || true
 
       - name: Install Make
         run: |

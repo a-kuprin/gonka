@@ -83,9 +83,14 @@ func (c *EpochGroupDataCache) GetCurrentEpochGroupData(currentEpochIndex uint64)
 
 // GetEpochGroupData returns epoch group data for specific epoch.
 // Uses cache, queries chain only on cache miss. Keeps max 2 epochs.
+//
+// Entries with an empty ValidationWeights set are not treated as authoritative:
+// refreshModelValidationThresholds can populate the cache at epoch start before
+// members are assigned, and a sticky empty cache would make IsActiveParticipant
+// permanently return false (breaking confirmation PoC validation).
 func (c *EpochGroupDataCache) GetEpochGroupData(ctx context.Context, epochIndex uint64) (*types.EpochGroupData, error) {
 	c.mu.RLock()
-	if cached, ok := c.epochCache[epochIndex]; ok {
+	if cached, ok := c.epochCache[epochIndex]; ok && len(cached.addressSet) > 0 {
 		c.mu.RUnlock()
 		return cached.data, nil
 	}
@@ -95,7 +100,7 @@ func (c *EpochGroupDataCache) GetEpochGroupData(ctx context.Context, epochIndex 
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if cached, ok := c.epochCache[epochIndex]; ok {
+	if cached, ok := c.epochCache[epochIndex]; ok && len(cached.addressSet) > 0 {
 		return cached.data, nil
 	}
 
@@ -135,14 +140,14 @@ func (c *EpochGroupDataCache) GetEpochGroupData(ctx context.Context, epochIndex 
 // IsActiveParticipant checks if address is active at given epoch. O(1) lookup.
 func (c *EpochGroupDataCache) IsActiveParticipant(ctx context.Context, epochIndex uint64, address string) (bool, error) {
 	c.mu.RLock()
-	if cached, ok := c.epochCache[epochIndex]; ok {
+	if cached, ok := c.epochCache[epochIndex]; ok && len(cached.addressSet) > 0 {
 		_, exists := cached.addressSet[address]
 		c.mu.RUnlock()
 		return exists, nil
 	}
 	c.mu.RUnlock()
 
-	// Cache miss - fetch data first
+	// Cache miss or empty (pre-member) entry — fetch / refresh first
 	_, err := c.GetEpochGroupData(ctx, epochIndex)
 	if err != nil {
 		return false, err

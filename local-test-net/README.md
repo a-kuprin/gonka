@@ -90,6 +90,14 @@ KEY_NAME=genesis docker compose \
 
 Legacy clients calling `/v1/devshard/*` are rewritten by the proxy to `/devshard/v1/*` before reaching versiond.
 
+**devshardctl** (user-side gateway used by Testermint `startDevshardProxy`) is also **not** a compose service and is **not** baked into the api image. Build a Linux binary and let Testermint `docker cp` it into `*-api`:
+
+```bash
+make devshardctl-build   # -> build/devshardctl
+```
+
+Production join stacks use a separate gateway container (`deploy/join/docker-compose.devshard-gateway.yml`) instead.
+
 ### Deploy (`deploy/join/`)
 
 Production join stack (`docker-compose.yml`) includes **one** edge-api and **one** versiond by default. Optional overlays:

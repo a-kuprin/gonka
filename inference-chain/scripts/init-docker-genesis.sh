@@ -198,7 +198,7 @@ echo "Starting cosmovisor and the chain"
 #  tail -f /dev/null
 #}
 
-sed -Ei 's/^address = ".*:9090"$/address = "0.0.0.0:9090"/g' "$STATE_DIR/config/app.toml"
+# gRPC bind (0.0.0.0:9090) comes from app_overrides.toml via update_configs when REST_API_ACTIVE=true.
 
 cosmovisor run start &
 COSMOVISOR_PID=$!

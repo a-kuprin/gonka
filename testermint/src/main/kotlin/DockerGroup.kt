@@ -218,11 +218,19 @@ data class DockerGroup(
             // often exits before genesis creates the cold key. Boot chain-node first, then
             // the rest. Default genesis tests (no versiond overlay) keep the original path.
             Logger.info("Genesis + versiond overlay: starting chain-node before full stack", "")
-            dockerProcess(*(baseArgs + listOf("up", "-d", "chain-node")).toTypedArray()).start().waitFor()
+            val nodeExit = runComposeLogged(
+                "genesis-chain-node-up",
+                *(baseArgs + listOf("up", "-d", "chain-node")).toTypedArray(),
+            )
+            if (nodeExit != 0) {
+                logComposeProjectState("after-failed-genesis-chain-node-up")
+                logInferenceStackContainers(pairName, "after-failed-genesis-chain-node-up")
+                error("[$pairName] genesis chain-node compose up exited $nodeExit")
+            }
             waitForColdKeyInNodeContainer()
             coldAccountPubkey = extractColdPubkeyFromNodeContainer()
             Logger.info("Genesis cold ACCOUNT_PUBKEY extracted for api startup", "")
-            dockerProcess(*(baseArgs + listOf("up", "-d")).toTypedArray()).start().waitFor()
+            bringUpGenesisFullStack(baseArgs)
         } else {
             composeArgs.addAll(listOf("up", "-d"))
             if (!isGenesis) {
@@ -236,11 +244,7 @@ data class DockerGroup(
                     logInferenceStackContainers(pairName, "after-failed-chain-node-up")
                 }
             } else {
-                val dockerProcess = dockerProcess(*composeArgs.toTypedArray())
-                val process = dockerProcess.start()
-                process.inputStream.bufferedReader().use { it.lines().forEach { line -> Logger.info(line, "") } }
-                process.errorStream.bufferedReader().use { it.lines().forEach { line -> Logger.info(line, "") } }
-                process.waitFor()
+                bringUpGenesisFullStack(baseArgs)
             }
         }
         if (!isGenesis) {
@@ -301,20 +305,25 @@ data class DockerGroup(
                 )
                 tailDockerLogs(apiContainer, lines = 150, context = "join-api-not-running")
                 tailDockerLogs("$pairName-postgres", lines = 80, context = "join-postgres")
-                tailDockerLogs("$pairName-proxy", lines = 40, context = "join-proxy")
+                tailDockerLogs("$pairName-edge-api", lines = 80, context = "join-edge-api")
+                tailDockerLogs("$pairName-proxy", lines = 80, context = "join-proxy")
+                logProxyStackDiagnostics(pairName, "join-api-not-running")
             }
             Thread.sleep(Duration.ofSeconds(10))
             if (!dockerContainerRunning(apiContainer)) {
                 logComposeProjectState("after-wait-api-still-down")
                 logInferenceStackContainers(pairName, "after-wait-api-still-down")
+                logProxyStackDiagnostics(pairName, "after-wait-api-still-down")
                 error(
                     "$apiContainer not running after join stack up (compose exit=$stackExit). " +
                         "See testermint/logs for compose + docker log output.",
                 )
             }
+            waitForProxyStackReady()
         }
         if (isGenesis && usesVersiondOverlay()) {
             ensureGenesisApiRunning()
+            waitForProxyStackReady()
         }
         // Just register the log events. Skip while versiond genesis is still settling —
         // initializeCluster will discover pairs after RPC readiness.
@@ -388,7 +397,12 @@ data class DockerGroup(
             composeArgs.addAll(listOf("-f", file))
         }
         composeArgs.addAll(listOf("--project-directory", workingDirectory, "up", "-d", "--force-recreate", "api"))
-        dockerProcess(*composeArgs.toTypedArray()).start().waitFor()
+        val exit = runComposeLogged("genesis-api-recreate", *composeArgs.toTypedArray())
+        if (exit != 0) {
+            logComposeProjectState("after-failed-genesis-api-recreate")
+            logInferenceStackContainers(pairName, "after-failed-genesis-api-recreate")
+            logProxyStackDiagnostics(pairName, "after-failed-genesis-api-recreate")
+        }
         val deadline = System.nanoTime() + Duration.ofMinutes(2).toNanos()
         while (System.nanoTime() < deadline) {
             if (dockerContainerRunning(apiContainer)) {
@@ -396,7 +410,88 @@ data class DockerGroup(
             }
             Thread.sleep(Duration.ofSeconds(2))
         }
+        logProxyStackDiagnostics(pairName, "genesis-api-did-not-stay-running")
         error("$apiContainer did not stay running (check: docker logs $apiContainer)")
+    }
+
+    /**
+     * Full genesis `compose up -d` with exit-code check and proxy-stack readiness.
+     * Proxy depends_on edge-api; ignoring compose exit previously left discovery without genesis-proxy.
+     */
+    private fun bringUpGenesisFullStack(baseArgs: List<String>) {
+        Logger.info("[{}] Starting genesis full stack (up -d)", pairName)
+        val exit = runComposeLogged(
+            "genesis-full-stack-up",
+            *(baseArgs + listOf("up", "-d")).toTypedArray(),
+        )
+        logComposeProjectState("after-genesis-full-stack-up")
+        logInferenceStackContainers(pairName, "after-genesis-full-stack-up")
+        if (exit != 0) {
+            logProxyStackDiagnostics(pairName, "genesis-full-stack-up-failed")
+            error(
+                "[$pairName] genesis compose up -d exited $exit. " +
+                    "Proxy/edge-api may be missing; see compose + proxy stack diagnostics in logs.",
+            )
+        }
+        waitForProxyStackReady()
+    }
+
+    /**
+     * Pair discovery requires a running `*-proxy`. On this branch proxy also needs `*-edge-api`.
+     * Retry until both are running; dump inspect/logs/nginx -t on timeout for CI.
+     */
+    internal fun waitForProxyStackReady(timeout: Duration = Duration.ofSeconds(90)) {
+        val edge = "$pairName-edge-api"
+        val proxy = "$pairName-proxy"
+        Logger.info("[{}] Waiting for proxy stack: {} and {}", pairName, edge, proxy)
+        val deadline = System.nanoTime() + timeout.toNanos()
+        val recoverAt = System.nanoTime() + Duration.ofSeconds(20).toNanos()
+        var attemptedRecover = false
+        var lastLogAt = 0L
+        while (System.nanoTime() < deadline) {
+            val edgeOk = dockerContainerRunning(edge)
+            val proxyOk = dockerContainerRunning(proxy)
+            if (edgeOk && proxyOk) {
+                Logger.info("[{}] Proxy stack ready (edge-api + proxy running)", pairName)
+                return
+            }
+            val now = System.nanoTime()
+            if (!attemptedRecover && now >= recoverAt) {
+                attemptedRecover = true
+                Logger.warn(
+                    "[{}] proxy stack still down; explicitly starting edge-api + proxy",
+                    pairName,
+                )
+                val composeArgs = mutableListOf("compose", "-p", pairName)
+                composeFiles.forEach { file ->
+                    composeArgs.addAll(listOf("-f", file))
+                }
+                composeArgs.addAll(
+                    listOf("--project-directory", workingDirectory, "up", "-d", "edge-api", "proxy"),
+                )
+                val recoverExit = runComposeLogged("proxy-stack-recover-up", *composeArgs.toTypedArray())
+                if (recoverExit != 0) {
+                    logProxyStackDiagnostics(pairName, "proxy-stack-recover-failed")
+                }
+            }
+            if (now - lastLogAt > Duration.ofSeconds(15).toNanos()) {
+                Logger.warn(
+                    "[{}] proxy stack not ready yet: edge-api.running={} proxy.running={}",
+                    pairName,
+                    edgeOk,
+                    proxyOk,
+                )
+                logInferenceStackContainers(pairName, "proxy-stack-wait")
+                lastLogAt = now
+            }
+            Thread.sleep(Duration.ofSeconds(2))
+        }
+        logComposeProjectState("proxy-stack-timeout")
+        logProxyStackDiagnostics(pairName, "proxy-stack-timeout")
+        error(
+            "[$pairName] proxy stack not ready within ${timeout.seconds}s " +
+                "(need running $edge and $proxy). See proxy stack diagnostics in logs.",
+        )
     }
 
     private fun dockerContainerRunning(containerName: String): Boolean = isDockerContainerRunning(containerName)
@@ -736,9 +831,25 @@ fun initializeCluster(joinCount: Int = 0, config: ApplicationConfig, currentClus
         if (genesisGroup.usesVersiondOverlay()) {
             genesisGroup.ensureGenesisApiRunning()
         }
-        val genesisPair = getLocalInferencePairs(config)
+        // Discovery requires a running genesis-proxy (and edge-api on this branch).
+        // Wait + dump diagnostics here so CI logs show why pair discovery would fail.
+        Logger.info("Waiting for genesis proxy stack before pair discovery", "")
+        genesisGroup.waitForProxyStackReady()
+        val genesisPairs = getLocalInferencePairs(config)
+        val genesisPair = genesisPairs
             .firstOrNull { it.name == genesisGroup.pairName || it.name == "/${genesisGroup.pairName}" }
-            ?: error("Could not find local inference pair for keyName=${genesisGroup.pairName}")
+        if (genesisPair == null) {
+            Logger.error(
+                "Genesis pair missing after proxy-stack wait. discovered={}",
+                genesisPairs.map { it.name },
+            )
+            logProxyStackDiagnostics(genesisGroup.pairName, "genesis-pair-not-found")
+            logInferenceStackContainers(genesisGroup.pairName, "genesis-pair-not-found")
+            error(
+                "Could not find local inference pair for keyName=${genesisGroup.pairName}. " +
+                    "Proxy stack diagnostics were logged; check genesis-proxy / genesis-edge-api.",
+            )
+        }
         Logger.info("Waiting for genesis API and ML nodes readiness", "")
         genesisPair.waitForMlNodesToLoad(maxWaitAttempts = 18)
         if (joinGroups.isNotEmpty()) {

@@ -1027,7 +1027,9 @@ data class LocalInferencePair(
             val stderrFile = devshardProxyLogPath(escrowId)
             // Tests pin the route prefix explicitly so they are not coupled to
             // devshardctl's release-default routing choice.
-            val effectiveRoutePrefix = routePrefix ?: defaultDevshardRoutePrefix()
+            // FQN: IDE analysis of this large file sometimes fails to resolve the
+            // same-package top-level helper in DevshardVersiondTestConfig.kt.
+            val effectiveRoutePrefix = routePrefix ?: com.productscience.defaultDevshardRoutePrefix()
             val routePrefixEnv = " DEVSHARD_ROUTE_PREFIX='$effectiveRoutePrefix'"
             val logLevelEnv = if (debugLogging) " DEVSHARD_LOG_LEVEL=debug" else ""
             val startCommand = listOf(

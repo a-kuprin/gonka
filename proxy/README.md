@@ -117,9 +117,11 @@ Key runtime environment variables:
 
 `/v1/` is split across two backends. The proxy registers **exact/regex locations for read-only query paths** before the generic `/v1/` catch-all:
 
-- **edge-api** — chain and query endpoints: status, models, pricing, participants, epochs, restrictions, BLS, bridge addresses, verify-proof/verify-block, debug helpers
-- **dapi (`api`)** — inference and node operations: chat/completions, inference payloads, PoC proofs, stats, bridge queue, participant registration
+- **edge-api** — chain and query endpoints: status, models, pricing, participants (GET), epochs, restrictions, BLS, bridge addresses, verify-proof/verify-block, debug helpers
+- **dapi (`api`)** — inference and node operations: chat/completions, inference payloads, PoC proofs, stats, bridge queue, participant registration (`POST /v1/participants`)
 - **versiond** — devshard sessions: `/v1/devshard/*` is rewritten internally to `/devshard/v1/*`, then proxied like other `/devshard/` traffic
+
+`/v1/participants` is method-split: GET/HEAD/OPTIONS → edge-api; other methods (notably POST registration) → dapi via an internal named location. Without that split, nginx would send POST to edge-api and return 405.
 
 Multi-instance edge-api (local-test-net or `deploy/join/docker-compose.edge-api-multi.yml`):
 

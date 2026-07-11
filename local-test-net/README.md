@@ -47,7 +47,7 @@ docker-compose -f docker-compose-base.yml -f docker-compose.genesis.yml -f docke
 - **api**: Decentralized API server (inference, PoC, chat — not Tier A queries)
 - **edge-api**: Read-only Tier A `/v1/` query API (status, models, epochs, participants, BLS, etc.)
 - **mock-server**: Testing mock server
-- **proxy**: Routes 22 Tier A `/v1/` paths → edge-api; remaining `/v1/` → dapi; `/devshard/` → versiond (when versiond overlay is present)
+- **proxy**: Routes 22 Tier A `/v1/` paths → edge-api (GET `/v1/participants` method-split so POST registration still hits dapi); remaining `/v1/` → dapi; `/devshard/` → versiond (when versiond overlay is present)
 
 ### edge-api overlays (optional)
 

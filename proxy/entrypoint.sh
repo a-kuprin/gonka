@@ -780,6 +780,10 @@ append_edge_api_route_locations() {
     # Usage: append_edge_api_route_locations "/v1/foo /v1/foo/{id}"
     # Emitted before generic /v1/ API locations so Tier A read-only routes
     # hit edge-api instead of dapi.
+    #
+    # /v1/participants is dual-use: GET is served by edge-api (Tier A), but
+    # POST registers unfunded participants on dapi. Method-split that path so
+    # registration is not swallowed by the exact edge-api location (405).
     local routes="$1"
 
     if [ -z "${EDGE_API_SERVICE_NAME}" ]; then
@@ -810,6 +814,54 @@ append_edge_api_route_locations() {
             ${LIMIT_REQ_RULE_GONKA_API}
             ${LIMIT_CONN_RULE_GONKA_API}
             proxy_pass http://edge_api_backend;
+            proxy_set_header Host \$\$host;
+            proxy_set_header X-Real-IP \$\$remote_addr;
+            proxy_set_header X-Forwarded-For \$\$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$\$scheme;
+            proxy_set_header Authorization \$\$http_authorization;
+
+            ${CORS_CONFIG}
+
+            proxy_connect_timeout ${GONKA_API_CONNECT_TIMEOUT}s;
+            proxy_send_timeout ${GONKA_API_TRANSFER_TIMEOUT}s;
+            proxy_read_timeout ${GONKA_API_TRANSFER_TIMEOUT}s;
+        }
+    "
+        elif [ "$route" = "/v1/participants" ]; then
+            # GET → edge-api; POST registration → dapi.
+            # Avoid limit_except: nginx rejects proxy_set_header there.
+            API_VERSION_LOCATIONS="${API_VERSION_LOCATIONS}
+        # Tier A edge-api GET /v1/participants; POST registration stays on dapi
+        location = ${route} {
+            set \$limit_zone_name \"GNKAPI\";
+            ${LIMIT_REQ_RULE_GONKA_API}
+            ${LIMIT_CONN_RULE_GONKA_API}
+
+            error_page 418 = @v1_participants_dapi;
+            if (\$\$request_method !~* ^(GET|HEAD|OPTIONS)\$) {
+                return 418;
+            }
+
+            proxy_pass http://edge_api_backend;
+            proxy_set_header Host \$\$host;
+            proxy_set_header X-Real-IP \$\$remote_addr;
+            proxy_set_header X-Forwarded-For \$\$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$\$scheme;
+            proxy_set_header Authorization \$\$http_authorization;
+
+            ${CORS_CONFIG}
+
+            proxy_connect_timeout ${GONKA_API_CONNECT_TIMEOUT}s;
+            proxy_send_timeout ${GONKA_API_TRANSFER_TIMEOUT}s;
+            proxy_read_timeout ${GONKA_API_TRANSFER_TIMEOUT}s;
+        }
+
+        location @v1_participants_dapi {
+            set \$limit_zone_name \"GNKAPI\";
+            ${LIMIT_REQ_RULE_GONKA_API}
+            ${LIMIT_CONN_RULE_GONKA_API}
+            ${API_STATUS}
+            proxy_pass http://api_backend;
             proxy_set_header Host \$\$host;
             proxy_set_header X-Real-IP \$\$remote_addr;
             proxy_set_header X-Forwarded-For \$\$proxy_add_x_forwarded_for;

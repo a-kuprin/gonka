@@ -54,6 +54,11 @@ type HostManager struct {
 	recorder           PayloadAuthClient
 	availability       devshardpkg.AvailabilityProvider
 	maxNonce           devshardpkg.MaxNonceProvider
+
+	statsMu           sync.Mutex
+	statsShardsCache  *statsShardsResponse
+	statsShardsCached time.Time
+	statsDetailsCache map[string]statsShardDetailCache
 }
 
 func NewHostManager(
@@ -79,6 +84,7 @@ func NewHostManager(
 		bridge:             br,
 		payloadStore:       ps,
 		recorder:           recorder,
+		statsDetailsCache:  make(map[string]statsShardDetailCache),
 	}
 }
 
@@ -299,7 +305,11 @@ func (m *HostManager) recoverSession(escrowID string) error {
 }
 
 // Register mounts devshard session routes on the given echo group.
+// Stats routes are registered before lazy session routes so they are not
+// wrapped by the session EchoMiddleware applied inside RegisterLazySessionRoutes.
 func (m *HostManager) Register(g *echo.Group) {
+	g.GET("/stats/shards", m.handleStatsShards)
+	g.GET("/stats/shards/:escrow_id", m.handleStatsShard)
 	devshardserver.RegisterLazySessionRoutes(g, m, m)
 }
 

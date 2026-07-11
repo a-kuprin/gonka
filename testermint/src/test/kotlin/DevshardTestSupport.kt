@@ -1,6 +1,7 @@
 import com.github.dockerjava.api.async.ResultCallback
 import com.github.dockerjava.api.model.Frame
 import com.github.dockerjava.core.DockerClientBuilder
+import com.github.kittinunf.fuel.Fuel
 import com.productscience.*
 import com.productscience.data.*
 import kotlin.test.assertNotNull
@@ -407,6 +408,47 @@ fun LocalInferencePair.assertDevshardSettlement(
     assertThat(balanceAfter).isEqualTo(user.fundAmount - totalPayout)
 
     return result
+}
+
+fun LocalInferencePair.getDevshardShardStatsDetail(
+    escrowId: Long,
+    routePrefix: String = defaultDevshardRoutePrefix(),
+): DevshardShardStatsDetail {
+    val normalizedPrefix = routePrefix.trimEnd('/')
+    val path = "$normalizedPrefix/stats/shards/$escrowId"
+    val raw = if (normalizedPrefix.startsWith("/devshard/")) {
+        val url = "${api.getPublicUrl().trimEnd('/')}$path"
+        val (_, response, result) = Fuel.get(url).timeoutRead(10_000).responseString()
+        check(response.statusCode == 200) {
+            "GET $url returned ${response.statusCode}: $result"
+        }
+        result.get()
+    } else {
+        curlFromApiNetwork("${apiContainerPublicUrl()}$path")
+    }
+    return cosmosJson.fromJson(raw, DevshardShardStatsDetail::class.java)
+}
+
+fun LocalInferencePair.waitForDevshardValidationObservability(
+    escrowId: Long,
+    minCompleted: Int = 1,
+    timeoutMs: Long = 120_000L,
+    pollIntervalMs: Long = 2_000L,
+    routePrefix: String = defaultDevshardRoutePrefix(),
+) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+        val stats = getDevshardShardStatsDetail(escrowId, routePrefix)
+        if (stats.validationObservability.totals.completedValidations >= minCompleted) {
+            return
+        }
+        Thread.sleep(pollIntervalMs)
+    }
+    val last = getDevshardShardStatsDetail(escrowId, routePrefix)
+    error(
+        "timed out waiting for validation observability completed >= $minCompleted " +
+            "(got ${last.validationObservability.totals.completedValidations})",
+    )
 }
 
 /** True when validation challenged the inference and/or quorum invalidated it. */

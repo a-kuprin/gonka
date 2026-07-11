@@ -18,25 +18,39 @@ const (
 	subscriptionBuffer    = 100
 )
 
-// subscription holds a CometBFT query and a type-erased dispatch function.
+// subscription holds a CometBFT query and one or more type-erased dispatch
+// functions. Multiple handlers for the same query share a single WS
+// subscription: CometBFT's HTTP client keeps only one channel per query
+// (subscriptions[query] = outc), so a second Subscribe for the same query
+// would overwrite the first and silently drop its handlers.
 type subscription struct {
-	query   string
-	handler func(ctx context.Context, result ctypes.ResultEvent)
+	query    string
+	handlers []func(ctx context.Context, result ctypes.ResultEvent)
 }
 
 // Subscribe registers a typed subscription on l. parse is called for every
 // matching ResultEvent; if it returns false the event is silently skipped.
 // handle is called with the parsed value. All registrations must happen before
 // Start is called.
+//
+// Handlers that share the same query are coalesced onto one CometBFT
+// subscription and invoked in registration order.
 func Subscribe[T any](l *Listener, query string, parse func(ctypes.ResultEvent) (T, bool), handle func(context.Context, T)) {
+	handler := func(ctx context.Context, result ctypes.ResultEvent) {
+		v, ok := parse(result)
+		if ok {
+			handle(ctx, v)
+		}
+	}
+	for i := range l.subs {
+		if l.subs[i].query == query {
+			l.subs[i].handlers = append(l.subs[i].handlers, handler)
+			return
+		}
+	}
 	l.subs = append(l.subs, subscription{
-		query: query,
-		handler: func(ctx context.Context, result ctypes.ResultEvent) {
-			v, ok := parse(result)
-			if ok {
-				handle(ctx, v)
-			}
-		},
+		query:    query,
+		handlers: []func(context.Context, ctypes.ResultEvent){handler},
 	})
 }
 
@@ -75,6 +89,7 @@ func (l *Listener) OnDevshardEscrowSettled(h DevshardEscrowSettledHandler) {
 }
 
 // OnNewBlock registers a handler called for each newly committed block.
+// Multiple OnNewBlock registrations share one CometBFT subscription.
 func (l *Listener) OnNewBlock(h NewBlockHandler) {
 	Subscribe(l, "tm.event='NewBlock'", parseNewBlockEvent, h)
 }
@@ -117,7 +132,7 @@ func (l *Listener) run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("subscribe %q: %w", sub.query, err)
 		}
-		h := sub.handler
+		handlers := sub.handlers
 		q := sub.query
 		go func() {
 			for {
@@ -126,7 +141,9 @@ func (l *Listener) run(ctx context.Context) error {
 					errCh <- fmt.Errorf("subscription closed: %s", q)
 					return
 				}
-				h(ctx, result)
+				for _, h := range handlers {
+					h(ctx, result)
+				}
 			}
 		}()
 	}

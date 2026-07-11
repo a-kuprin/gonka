@@ -829,7 +829,9 @@ append_edge_api_route_locations() {
     "
         elif [ "$route" = "/v1/participants" ]; then
             # GET → edge-api; POST registration → dapi.
-            # Avoid limit_except: nginx rejects proxy_set_header there.
+            # Dispatch with if+return only; keep all proxy_* directives in named
+            # locations. nginx rejects proxy_set_header after if / in limit_except
+            # in the same location ("directive is not allowed here").
             API_VERSION_LOCATIONS="${API_VERSION_LOCATIONS}
         # Tier A edge-api GET /v1/participants; POST registration stays on dapi
         location = ${route} {
@@ -838,10 +840,17 @@ append_edge_api_route_locations() {
             ${LIMIT_CONN_RULE_GONKA_API}
 
             error_page 418 = @v1_participants_dapi;
-            if (\$\$request_method !~* ^(GET|HEAD|OPTIONS)\$) {
-                return 418;
+            error_page 419 = @v1_participants_edge;
+            if (\$\$request_method ~* ^(GET|HEAD|OPTIONS)\$) {
+                return 419;
             }
+            return 418;
+        }
 
+        location @v1_participants_edge {
+            set \$limit_zone_name \"GNKAPI\";
+            ${LIMIT_REQ_RULE_GONKA_API}
+            ${LIMIT_CONN_RULE_GONKA_API}
             proxy_pass http://edge_api_backend;
             proxy_set_header Host \$\$host;
             proxy_set_header X-Real-IP \$\$remote_addr;

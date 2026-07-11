@@ -268,10 +268,12 @@ data class DockerGroup(
             )
             node.waitForNextBlock(2)
             node.grantMlOpsPermissionsToWarmAccount()
-            // Services to start after registration. Proxy is in base compose
-            // and started by "up -d" without explicit naming. Versiond is
-            // added when this pair's additional compose files include it.
-            val joinServices = mutableListOf("api", "mock-server", "proxy")
+            // Services to start after registration. edge-api is listed explicitly:
+            // proxy depends_on it, but Compose sometimes skips that dependency when
+            // starting a subset of services after chain-node is already up (reboot),
+            // which leaves join proxies 502ing on Tier A /v1/epochs/* readiness checks.
+            // Versiond is added when this pair's additional compose files include it.
+            val joinServices = mutableListOf("api", "mock-server", "edge-api", "proxy")
             val additionalForPair = config.additionalDockerFilesByKeyName[pairName] ?: emptyList()
             if (additionalForPair.any { it.contains("versiond") }) {
                 joinServices.add("versiond")

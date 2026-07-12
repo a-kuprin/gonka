@@ -116,8 +116,9 @@ Versiond-managed runtime state is persisted on the host under `./devshards`:
 Both flows are covered on purpose:
 
 - `DevshardTests.kt` verifies the legacy `/v1/devshard` path
-- `DevshardStandaloneTests.kt` verifies the standalone
-  `/devshard/<version>` path through proxy and versiond in two different modes
+- `DevshardVersiondSessionTests.kt` / `DevshardVersiondAdvancedTests.kt`
+  verify the standalone `/devshard/<version>` path through proxy and versiond
+  (override-forced and advanced/special-config coverage, split for CI parallelism)
 
 The override-driven tests use `VERSIOND_FORCE=<version>` together with
 `VERSIOND_OVERRIDE_<version>` to run the locally built binary and exercise full

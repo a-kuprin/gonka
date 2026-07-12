@@ -412,7 +412,7 @@ fun LocalInferencePair.assertDevshardSettlement(
 
 fun LocalInferencePair.getDevshardShardStatsDetail(
     escrowId: Long,
-    routePrefix: String = defaultDevshardRoutePrefix(),
+    routePrefix: String = com.productscience.defaultDevshardRoutePrefix(),
 ): DevshardShardStatsDetail {
     val normalizedPrefix = routePrefix.trimEnd('/')
     val path = "$normalizedPrefix/stats/shards/$escrowId"
@@ -434,7 +434,7 @@ fun LocalInferencePair.waitForDevshardValidationObservability(
     minCompleted: Int = 1,
     timeoutMs: Long = 120_000L,
     pollIntervalMs: Long = 2_000L,
-    routePrefix: String = defaultDevshardRoutePrefix(),
+    routePrefix: String = com.productscience.defaultDevshardRoutePrefix(),
 ) {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (System.currentTimeMillis() < deadline) {

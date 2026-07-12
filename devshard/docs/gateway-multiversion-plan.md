@@ -241,8 +241,8 @@ Regardless of option:
   unapproved version).
 - **TODO** Go unit: cross-version cache isolation.
 - **TODO** Testermint: extend the standalone scenario
-  (`testermint/src/test/kotlin/DevshardStandaloneTests.kt`,
-  `DevshardTestSupport.kt`) to bring up hosts with both versiond slots, create a
+  (`testermint/src/test/kotlin/DevshardVersiondSessionTests.kt` /
+  `DevshardVersiondAdvancedTests.kt`, `DevshardTestSupport.kt`) to bring up hosts with both versiond slots, create a
   v1 and a v2 escrow, run inferences on both, and settle both, asserting the
   on-chain settlement tag matches the bind for each.
 
